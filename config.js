@@ -14,10 +14,16 @@ window.MEETING_CONFIG = {
   ROOM: "SampleAppWorseParkingsCutOpenly", // default room. Make it long and random!
   NAMESPACE: "tutormohan",                 // unique to you (letters/numbers/dashes)
 
-  // SHA-256 hash of the teacher passcode (NOT the passcode itself).
-  // Make yours with make-passcode-hash.html, then paste it here.
-  // (This default hash = "change-me-123". The app warns you until you change it.)
-  HOST_PASSCODE_HASH: "8eb2961d9750214f76ff37133422ee3f48100588caa32566007a6d33bea8b5fc",
+  // TEACHERS: one entry per teacher. Each teacher has their OWN passcode.
+  //   name  = shown to students and written in attendance/recording file names
+  //   hash  = SHA-256 of that teacher's passcode. Make it with make-passcode-hash.html
+  //   rooms = (optional) only these rooms can be hosted with this passcode
+  // To remove a teacher, delete their line and upload config.js again. Their passcode stops working.
+  // (The first hash below = "change-me-123". The app warns you until you replace it.)
+  TEACHERS: [
+    { name: "Mohan Sir",  hash: "8eb2961d9750214f76ff37133422ee3f48100588caa32566007a6d33bea8b5fc" },
+    // { name: "Priya Madam", hash: "PASTE-HASH-HERE", rooms: ["maths-batch-a", "maths-batch-b"] },
+  ],
 
   /* ---------- Optional ---------- */
   PUBLIC_URL: "",            // e.g. "https://YOURNAME.github.io/REPO/". Empty = automatic
