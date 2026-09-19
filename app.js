@@ -1164,7 +1164,7 @@ window.addEventListener("load", () => {
   /* ---- init ---- */
   setColor("#111111"); setTool("pen"); setMode("video"); resizeCanvas(); recalc(); updUI();
 });
-})();ERS.push({ name: "", hash: String(CFG.HOST_PASSCODE_HASH).trim().toLowerCase(), rooms: null });
+})();TEACHERS.push({ name: "", hash: String(CFG.HOST_PASSCODE_HASH).trim().toLowerCase(), rooms: null });
 const EXTRA_ICE_SERVERS = Array.isArray(CFG.EXTRA_ICE_SERVERS) ? CFG.EXTRA_ICE_SERVERS : [];
 const PUBLIC_URL = CFG.PUBLIC_URL || "";
 const LOGO = CFG.LOGO || "🎓";
