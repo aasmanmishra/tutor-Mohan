@@ -15,6 +15,7 @@ No server needed (WebRTC via PeerJS). Host it free on GitHub Pages.
 ## Customise (config.js)
 - `APP_NAME`, `TAGLINE`, `WELCOME_TEXT`, `FOOTER_TEXT` – text on the join screen
 - `LOGO` – an emoji like `"🎓"` or an uploaded image like `"logo.png"` (also becomes the browser-tab icon)
+- `TEACHERS` – one line per teacher, each with their own passcode (see below)
 - `BRAND_COLOR` – e.g. `"#7c3aed"` recolours buttons and highlights everywhere
 - `TEACHER_LABEL` – name students see on your video, e.g. `"Mohan Sir"`
 
@@ -29,8 +30,21 @@ No server needed (WebRTC via PeerJS). Host it free on GitHub Pages.
 ## Student features
 - Raise/lower hand (✋), chat, see the teacher, view the whiteboard
 
+## Separate passcode for each teacher
+In `config.js`, add one line per teacher inside `TEACHERS`:
+```js
+TEACHERS: [
+  { name: "Mohan Sir",   hash: "HASH-1" },
+  { name: "Priya Madam", hash: "HASH-2", rooms: ["maths-batch-a", "maths-batch-b"] },
+],
+```
+1. Give each teacher a different passcode. Open `make-passcode-hash.html` on your computer, type it, copy the hash into that teacher's line. Do this for each teacher, and tell each teacher only their own passcode.
+2. `name` is shown to students and written in that teacher's attendance file and recording file name. The teacher can't change it.
+3. `rooms` (optional) limits which rooms that passcode can host. Leave it out to allow any room.
+4. **To remove a teacher**, delete their line and upload `config.js` again. Their passcode stops working right away.
+
 ## Before you go live
-1. Make your own passcode: open `make-passcode-hash.html`, type it, paste the hash into `HOST_PASSCODE_HASH`. The app shows a warning until you do.
+1. Replace the sample hash (`change-me-123`) with real passcode hashes. The app warns you until you do.
 2. Change `ROOM` and `NAMESPACE` to something unique.
 3. GitHub Pages: repo **Settings → Pages → Deploy from a branch → main / (root)**.
 
