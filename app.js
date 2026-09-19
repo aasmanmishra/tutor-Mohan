@@ -7,6 +7,11 @@ const APP_NAME = CFG.APP_NAME || "My Meeting App";
 const HOST_PASSCODE_HASH = String(CFG.HOST_PASSCODE_HASH || "").toLowerCase();
 const EXTRA_ICE_SERVERS = Array.isArray(CFG.EXTRA_ICE_SERVERS) ? CFG.EXTRA_ICE_SERVERS : [];
 const PUBLIC_URL = CFG.PUBLIC_URL || "";
+const LOGO = CFG.LOGO || "🎓";
+const BRAND = /^#[0-9a-f]{3,8}$/i.test(CFG.BRAND_COLOR || "") ? CFG.BRAND_COLOR : "#1a73e8";
+const TEACHER_LABEL = String(CFG.TEACHER_LABEL || "").slice(0, 40);
+const DEFAULT_HASH = "8eb2961d9750214f76ff37133422ee3f48100588caa32566007a6d33bea8b5fc";
+const DEFAULT_ROOM = "SampleAppWorseParkingsCutOpenly";
 
 async function sha256Hex(text) {
   if (!(window.crypto && crypto.subtle)) throw new Error("no-crypto");
@@ -33,10 +38,59 @@ window.addEventListener("load", () => {
   const calls = new Set();
   const tiles = new Map();
 
+  let teacherName = TEACHER_LABEL || "Teacher";   // what students see on the teacher's video tile
+  const attendance = [];                          // { id, name, joined, left }
+  const rejected = new Set();                     // removed students (blocked for this session)
+  const turnedAway = new Set();                   // turned away while the class was locked
+  const blocked = (id) => rejected.has(id) || turnedAway.has(id);
+  let locked = false, chatOn = true, handUp = false;
+
+  /* ---- branding ---- */
+  function setLogo(el, logo) {
+    el.textContent = "";
+    if (/^(https?:|data:)/i.test(logo) || /\.(png|jpe?g|svg|webp|gif|ico)(\?.*)?$/i.test(logo)) {
+      const img = document.createElement("img"); img.src = logo; img.alt = ""; el.append(img);
+    } else el.textContent = logo;
+  }
+  document.documentElement.style.setProperty("--brand", BRAND);
   document.title = APP_NAME;
   $("appName").textContent = APP_NAME;
   $("endedName").textContent = APP_NAME;
   $("pjName").textContent = APP_NAME;
+  $("pjTag").textContent = CFG.TAGLINE || "";
+  $("pjWelcome").textContent = CFG.WELCOME_TEXT || "";
+  $("pjFoot").textContent = CFG.FOOTER_TEXT || "";
+  ["brandLogo", "pjLogo", "endedLogo"].forEach((id) => setLogo($(id), LOGO));
+  (() => {
+    const l = document.createElement("link"); l.rel = "icon";
+    l.href = /^(https?:|data:)/i.test(LOGO) || /\.(png|jpe?g|svg|webp|gif|ico)(\?.*)?$/i.test(LOGO)
+      ? LOGO : "data:image/svg+xml," + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y=".9em" font-size="90">${LOGO}</text></svg>`);
+    document.head.append(l);
+  })();
+
+  /* ---- small helpers: toast, beep, download ---- */
+  function toast(text, opts) {
+    opts = opts || {};
+    const d = document.createElement("div"); d.className = "toast" + (opts.type ? " " + opts.type : "");
+    const sp = document.createElement("span"); sp.textContent = text; d.append(sp);
+    const x = document.createElement("button"); x.type = "button"; x.textContent = "✕"; x.setAttribute("aria-label", "Dismiss"); x.onclick = () => d.remove(); d.append(x);
+    $("toasts").append(d);
+    if (opts.ms !== 0) setTimeout(() => d.remove(), opts.ms || 5000);
+    return d;
+  }
+  let actx = null;
+  function beep() {
+    try {
+      actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+      const o = actx.createOscillator(), g = actx.createGain(); o.frequency.value = 880; g.gain.value = 0.05;
+      o.connect(g); g.connect(actx.destination); o.start(); o.stop(actx.currentTime + 0.15);
+    } catch (e) { /* ignore */ }
+  }
+  function saveBlob(blob, name) {
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+  }
+  const netBad = (b) => $("netDot").classList.toggle("bad", !!b);
 
   function setStatus(t) { const el = $("vstatus"); el.textContent = t || ""; el.style.display = t ? "block" : "none"; }
   function ensureTile(id, name, self) {
@@ -73,10 +127,11 @@ window.addEventListener("load", () => {
   const outVideo = () => (screenStream ? screenStream.getVideoTracks()[0] : camTrack);
   const outStream = () => new MediaStream([outVideo(), ...localStream.getAudioTracks()].filter(Boolean));
 
-  $("micBtn").onclick = () => {
+  function setMic(on) {
     const t = localStream && localStream.getAudioTracks()[0]; if (!t) return;
-    t.enabled = !t.enabled; $("micBtn").classList.toggle("off", !t.enabled); $("micBtn").textContent = t.enabled ? "🎤" : "🔇";
-  };
+    t.enabled = on; $("micBtn").classList.toggle("off", !on); $("micBtn").textContent = on ? "🎤" : "🔇";
+  }
+  $("micBtn").onclick = () => { const t = localStream && localStream.getAudioTracks()[0]; if (t) setMic(!t.enabled); };
   $("camBtn").onclick = () => {
     if (!camTrack) return;
     camTrack.enabled = !camTrack.enabled; $("camBtn").classList.toggle("off", !camTrack.enabled); $("camBtn").textContent = camTrack.enabled ? "📷" : "🚫";
@@ -111,14 +166,14 @@ window.addEventListener("load", () => {
       setStatus("Starting class…");
       peer = new Peer(HOST_PEER, PEER_OPTS);
       peer.on("open", (id) => {
-        myId = id; hostId = id; recalc();
+        netBad(false); myId = id; hostId = id; recalc();
         if (ready) return; ready = true;
         setStatus("Class is live. Click 🔗 Share link to invite students.");
         setTimeout(() => { if ($("vstatus").textContent.startsWith("Class is live")) setStatus(""); }, 9000);
       });
       peer.on("connection", onStudentConn);
       peer.on("call", onStudentCall);
-      peer.on("disconnected", () => { if (!leaving && peer && !peer.destroyed) { try { peer.reconnect(); } catch (e) { /* ignore */ } } });
+      peer.on("disconnected", () => { netBad(true); if (!leaving && peer && !peer.destroyed) { try { peer.reconnect(); } catch (e) { /* ignore */ } } });
       peer.on("error", (err) => {
         if (err.type === "unavailable-id") {
           if (++tries > 20) { setStatus("This class is already open in another tab or device. Close it, then reload this page."); return; }
@@ -132,11 +187,31 @@ window.addEventListener("load", () => {
     };
     open();
   }
+  function uniqueName(n, id) {
+    const used = new Set(); peers.forEach((p, k) => { if (k !== id && p.name) used.add(p.name.toLowerCase()); });
+    if (!used.has(n.toLowerCase())) return n;
+    let i = 2; while (used.has(`${n} (${i})`.toLowerCase())) i++;
+    return `${n} (${i})`;
+  }
   function onStudentConn(conn) {
     const id = conn.peer;
+    const wasKnown = attendance.some((a) => a.id === id);
+    if (rejected.has(id) || (locked && !wasKnown)) {
+      if (!rejected.has(id)) turnedAway.add(id);
+      conn.on("open", () => {
+        try { conn.send("wb:" + JSON.stringify({ t: "kick", reason: rejected.has(id) ? "removed" : "locked" })); } catch (e) { /* ignore */ }
+        setTimeout(() => { try { conn.close(); } catch (e) { /* ignore */ } }, 600);
+      });
+      return;
+    }
     conn.on("open", () => {
-      const p = peers.get(id) || {}; p.conn = conn; p.name = String((conn.metadata && conn.metadata.name) || "Student").slice(0, 40); peers.set(id, p);
+      const p = peers.get(id) || {}; p.conn = conn;
+      p.name = uniqueName(String((conn.metadata && conn.metadata.name) || "Student").trim().slice(0, 40) || "Student", id); peers.set(id, p);
+      let a = attendance.find((x) => x.id === id);
+      if (a) a.left = null; else { a = { id, name: p.name, joined: new Date(), left: null }; attendance.push(a); addSys(`${p.name} joined`); }
+      p.att = a;
       ensureTile(id, p.name);
+      bcast({ t: "hello", name: teacherName, chat: chatOn, rec: !!recorder }, [id]);
       sendPerm([id]);
       if ($("showAll").checked) bcast({ t: "mode", m: main.dataset.mode }, [id]);
       sendState(id); refreshPerm();
@@ -147,6 +222,7 @@ window.addEventListener("load", () => {
   }
   function onStudentCall(call) {
     const id = call.peer;
+    if (blocked(id)) { try { call.close(); } catch (e) { /* ignore */ } return; }
     const p = peers.get(id) || {}; p.call = call; peers.set(id, p);
     calls.add(call);
     call.answer(outStream());
@@ -158,7 +234,23 @@ window.addEventListener("load", () => {
     peers.delete(id);
     try { p.call && p.call.close(); } catch (e) { /* ignore */ }
     try { p.conn && p.conn.close(); } catch (e) { /* ignore */ }
-    dropTile(id); allowed.delete(id); sendPerm(); refreshPerm();
+    if (p.att) p.att.left = new Date();
+    if (!ended) addSys(`${p.name || "A student"} left`);
+    dropTile(id); allowed.delete(id); sendPerm(); updateHandBadge(); refreshPerm();
+  }
+  function lowerHand(id) {
+    const p = peers.get(id); if (!p) return;
+    p.hand = false; setHandMark(id, false); bcast({ t: "lowerhand" }, [id]); updateHandBadge(); refreshPerm();
+  }
+  function setHandMark(id, on) {
+    const t = tiles.get(id); if (!t) return;
+    let h = t.d.querySelector(".hand");
+    if (on && !h) { h = document.createElement("div"); h.className = "hand"; h.textContent = "✋"; t.d.append(h); }
+    else if (!on && h) h.remove();
+  }
+  function updateHandBadge() {
+    let n = 0; peers.forEach((p) => { if (p.hand) n++; });
+    const b = $("handBadge"); b.textContent = "✋ " + n; b.style.display = n ? "inline" : "none";
   }
 
   /* ---- student ---- */
@@ -168,10 +260,11 @@ window.addEventListener("load", () => {
     const waitMsg = "Waiting for the teacher to start the class…";
     const schedule = (msg, ms) => { if (leaving) return; setStatus(msg); clearTimeout(timer); timer = setTimeout(connectHost, ms || 3000); };
     const linked = (conn) => {
-      hostId = HOST_PEER; peers.set(HOST_PEER, { conn, name: "Teacher" }); setStatus(""); recalc();
+      hostId = HOST_PEER; peers.set(HOST_PEER, { conn, name: teacherName }); setStatus(""); recalc();
+      if (handUp) setTimeout(() => bcast({ t: "hand", up: true }), 600);
       const call = peer.call(HOST_PEER, outStream(), { metadata: { name: myName } });
       peers.get(HOST_PEER).call = call; calls.add(call);
-      call.on("stream", (st) => { ensureTile(HOST_PEER, "Teacher").v.srcObject = st; });
+      call.on("stream", (st) => { ensureTile(HOST_PEER, teacherName).v.srcObject = st; });
       call.on("close", () => calls.delete(call));
     };
     const lost = () => {
@@ -193,8 +286,8 @@ window.addEventListener("load", () => {
       clearTimeout(timer);
       timer = setTimeout(() => { if (!opened) { try { conn.close(); } catch (e) { /* ignore */ } schedule(waitMsg); } }, 10000);
     };
-    peer.on("open", (id) => { const first = !myId; myId = id; recalc(); if (first) connectHost(); });
-    peer.on("disconnected", () => { if (!leaving && peer && !peer.destroyed) { try { peer.reconnect(); } catch (e) { /* ignore */ } } });
+    peer.on("open", (id) => { netBad(false); const first = !myId; myId = id; recalc(); if (first) connectHost(); });
+    peer.on("disconnected", () => { netBad(true); if (!leaving && peer && !peer.destroyed) { try { peer.reconnect(); } catch (e) { /* ignore */ } } });
     peer.on("error", (err) => {
       if (err.type === "peer-unavailable") schedule(waitMsg);
       else if (["network", "server-error", "socket-error", "socket-closed"].includes(err.type)) setStatus("Cannot reach the connection service. Check your internet…");
@@ -203,13 +296,24 @@ window.addEventListener("load", () => {
   }
 
   /* ---- leaving ---- */
-  function showEnded() {
-    if (ended) return; ended = true; leaving = true;
+  function showEnded(msg) {
+    if (ended) return;
+    if (isHost) { finishRecording(); const n = new Date(); attendance.forEach((a) => { if (!a.left) a.left = n; }); }
+    ended = true; leaving = true;
+    $("endedMsg").textContent = msg || "The class has ended. Thanks for joining!";
+    try { wl && wl.release(); } catch (e) { /* ignore */ }
     try { peer && peer.destroy(); } catch (e) { /* ignore */ }
     try { localStream && localStream.getTracks().forEach((t) => t.stop()); screenStream && screenStream.getTracks().forEach((t) => t.stop()); } catch (e) { /* ignore */ }
     $("ended").classList.add("show");
   }
-  $("leaveBtn").onclick = () => { if (confirm("Leave the class?")) showEnded(); };
+  $("leaveBtn").onclick = () => {
+    if (!confirm(isHost ? "End the class for everyone?" : "Leave the class?")) return;
+    if (isHost) {
+      bcast({ t: "end" });
+      if (attendance.length && confirm("Download the attendance list before ending?")) downloadAttendance();
+      setTimeout(() => showEnded(), 400);
+    } else showEnded();
+  };
   $("rejoin").addEventListener("click", () => location.reload());
 
   /* ---- join screen ---- */
@@ -225,14 +329,21 @@ window.addEventListener("load", () => {
   }
   if (ROLE_PARAM === "student") $("pjTeacher").style.display = "none";
   if (ROLE_PARAM === "teacher") { $("pjStudent").style.display = "none"; setTeacherMode(true); }
+  let fails = 0, lockUntil = 0;
   async function enter(asHost) {
     if (entering) return;
     if (typeof Peer === "undefined") { pjMsg("Could not load the connection library. Check your internet and reload."); return; }
     if (asHost) {
+      const wait = Math.ceil((lockUntil - Date.now()) / 1000);
+      if (wait > 0) { pjMsg(`Too many wrong attempts. Try again in ${wait}s.`); return; }
       let ok = false;
       try { ok = (await sha256Hex($("pjPass").value)) === HOST_PASSCODE_HASH; }
       catch (e) { pjMsg("Passcode check needs HTTPS (GitHub Pages) or localhost."); return; }
-      if (!ok) { pjMsg("Wrong passcode"); return; }
+      if (!ok) {
+        fails++; if (fails >= 3) lockUntil = Date.now() + Math.min(300, (fails - 2) * 15) * 1000;
+        pjMsg("Wrong passcode"); return;
+      }
+      fails = 0;
     }
     const nm = $("pjUser").value.trim() || (asHost ? "Teacher" : "");
     if (!nm) { pjMsg("Please enter your name"); return; }
@@ -241,10 +352,14 @@ window.addEventListener("load", () => {
     $("pjStudent").disabled = $("pjTeacher").disabled = true;
     localStream = await getLocalMedia(); camTrack = localStream.getVideoTracks()[0];
     $("prejoin").style.display = "none";
-    if (!asHost) $("vwrap").classList.add("guest");
+    if (!asHost) { $("vwrap").classList.add("guest"); $("handBtn").style.display = ""; }
+    keepAwake();
     ensureTile("self", myName, true).v.srcObject = localStream;
     if (asHost) {
-      isHost = true;
+      isHost = true; teacherName = TEACHER_LABEL || myName;
+      $("recBtn").style.display = "";
+      if (HOST_PASSCODE_HASH === DEFAULT_HASH) toast("⚠ You are still using the default teacher passcode. Set your own HOST_PASSCODE_HASH in config.js.", { type: "warn", ms: 0 });
+      if (ROOM_ID === cleanId(DEFAULT_ROOM)) toast("⚠ Change ROOM and NAMESPACE in config.js so your class link is unique and hard to guess.", { type: "warn", ms: 0 });
       $("shareBtn").style.display = ""; $("permBtn").style.display = ""; $("showAllWrap").style.display = "";
       recalc(); startHost();
     } else startGuest();
@@ -328,8 +443,28 @@ window.addEventListener("load", () => {
     if (open) { unread = 0; badge.style.display = "none"; $("chatInput").focus(); }
     setTimeout(resizeCanvas, 30);
   });
+  function addSys(text) {
+    const d = document.createElement("div"); d.className = "msg sys"; d.textContent = text;
+    chatLog.append(d); chatLog.scrollTop = chatLog.scrollHeight;
+  }
+  function chatEnabled(on) {
+    chatOn = on; const off = !on && !isHost;
+    $("chatInput").disabled = off; $("chatSend").disabled = off;
+    $("chatInput").placeholder = off ? "Chat is turned off by the teacher" : "Type a message…";
+  }
+  function setHand(up, fromHost) {
+    handUp = up; $("handBtn").classList.toggle("on", up);
+    if (!fromHost) bcast({ t: "hand", up });
+    else toast("The teacher lowered your hand.");
+  }
+  $("handBtn").onclick = () => setHand(!handUp);
+  function showRec(on) {
+    $("recBadge").style.display = on ? "" : "none";
+    if (on && !isHost) toast("🔴 This class is being recorded.", { type: "warn" });
+  }
   $("chatForm").addEventListener("submit", (e) => {
     e.preventDefault();
+    if (!chatOn && !isHost) return;
     const t = $("chatInput").value.trim(); if (!t) return;
     $("chatInput").value = "";
     bcast({ t: "chat", who: myName, text: t });
@@ -379,6 +514,16 @@ window.addEventListener("load", () => {
     if (full === null) return;
     try {
       const m = JSON.parse(full);
+      if (!m || typeof m !== "object") return;
+      if (isHost) {
+        const p = peers.get(from); if (!p || !p.conn) return;
+        if (m.t === "chat") {
+          const now = Date.now(); p.ct = (p.ct || []).filter((x) => now - x < 5000);
+          if (!chatOn || p.ct.length >= 6) return; p.ct.push(now);
+          m.who = p.name; m.text = String(m.text || "").slice(0, 2000); if (!m.text.trim()) return;
+          full = JSON.stringify(m);
+        }
+      }
       onMsg(m, from);
       if (isHost && (m.t === "chat" || (WRITE.includes(m.t) && authorized(from)))) relayRaw(full, from);
     } catch (err) { console.warn("message error", err); }
@@ -453,9 +598,28 @@ window.addEventListener("load", () => {
     if ($("share").checked) bcast({ t: "page", k: key, n: pdfInfo.n, total: pdfInfo.total }, to);
   }
 
+  const HOSTCMD = ["hello", "kick", "end", "mute", "lowerhand", "chatlock", "rec"];
+  function hostCmd(m) {
+    switch (m.t) {
+      case "hello": if (m.name) { teacherName = String(m.name).slice(0, 40); ensureTile(HOST_PEER, teacherName); } chatEnabled(m.chat !== false); showRec(!!m.rec); break;
+      case "kick": showEnded(m.reason === "locked" ? "This class is locked. Ask your teacher to unlock it, then rejoin." : "You were removed from the class by the teacher."); break;
+      case "end": showEnded("The teacher ended the class. Thanks for joining!"); break;
+      case "mute": { const t = localStream && localStream.getAudioTracks()[0]; if (t && t.enabled) { setMic(false); toast("The teacher muted your microphone."); } break; }
+      case "lowerhand": setHand(false, true); break;
+      case "chatlock": chatEnabled(m.on !== false); break;
+      case "rec": showRec(!!m.on); break;
+    }
+  }
   function onMsg(m, from) {
     rx++;
     if (m.t === "chat") { incomingChat(m); return; }
+    if (m.t === "hand") {
+      if (!isHost || !from) return; const p = peers.get(from); if (!p) return;
+      p.hand = !!m.up; setHandMark(from, p.hand);
+      if (p.hand) { toast(`✋ ${p.name} raised a hand`); beep(); }
+      updateHandBadge(); refreshPerm(); return;
+    }
+    if (HOSTCMD.includes(m.t)) { if (isHost || (from && from !== hostId)) return; hostCmd(m); return; }
     if (m.t === "perm") { if (from && from !== hostId) return; allowAll = !!m.all; allowed = new Set(m.ids || []); recalc(); return; }
     if (m.t === "mode") { if (from && from !== hostId) return; setMode(m.m, true); return; }
     if (WRITE.includes(m.t) && from && !authorized(from)) return;
@@ -826,17 +990,94 @@ window.addEventListener("load", () => {
   /* ---- host login + permission panel ---- */
   function renderPerm() {
     const box = $("permList"); box.innerHTML = "";
-    $("allowAll").checked = allowAll;
-    const list = []; peers.forEach((p, id) => { if (p.conn && p.conn.open) list.push({ id, name: p.name }); });
-    if (!list.length) { box.textContent = "No students have joined yet."; return; }
-    list.forEach((p) => {
+    $("allowAll").checked = allowAll; $("lockClass").checked = locked; $("chatOnChk").checked = chatOn;
+    const list = []; peers.forEach((p, id) => { if (p.conn && p.conn.open) list.push({ id, p }); });
+    $("pCount").textContent = `${list.length} student${list.length === 1 ? "" : "s"} online`;
+    if (!list.length) { const e = document.createElement("div"); e.className = "muted2"; e.style.padding = "12px 0"; e.textContent = "No students have joined yet."; box.append(e); return; }
+    list.forEach(({ id, p }) => {
+      const row = document.createElement("div"); row.className = "prow";
+      const pn = document.createElement("span"); pn.className = "pn"; pn.textContent = p.name || "Student";
+      if (p.att) { const sm = document.createElement("small"); sm.textContent = "Joined " + p.att.joined.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); pn.append(sm); }
+      row.append(pn);
+      if (p.hand) { const h = document.createElement("button"); h.type = "button"; h.className = "hd"; h.textContent = "✋ Lower"; h.onclick = () => lowerHand(id); row.append(h); }
       const l = document.createElement("label"), c = document.createElement("input");
-      c.type = "checkbox"; c.checked = allowAll || allowed.has(p.id); c.disabled = allowAll;
-      c.onchange = () => { if (c.checked) allowed.add(p.id); else allowed.delete(p.id); sendPerm(); };
-      l.append(c, " " + (p.name || "Student"));
-      box.append(l);
+      c.type = "checkbox"; c.checked = allowAll || allowed.has(id); c.disabled = allowAll;
+      c.onchange = () => { if (c.checked) allowed.add(id); else allowed.delete(id); sendPerm(); };
+      l.title = "Allow this student to draw"; l.append(c, "✏️"); row.append(l);
+      const m = document.createElement("button"); m.type = "button"; m.textContent = "🔇"; m.title = "Mute this student's microphone"; m.onclick = () => { bcast({ t: "mute" }, [id]); toast(`Muted ${p.name}`, { ms: 2000 }); };
+      const x = document.createElement("button"); x.type = "button"; x.className = "danger"; x.textContent = "✕"; x.title = "Remove from class"; x.onclick = () => removeStudent(id, p.name);
+      row.append(m, x); box.append(row);
     });
   }
+  function removeStudent(id, name) {
+    if (!confirm(`Remove ${name || "this student"} from the class?`)) return;
+    rejected.add(id); bcast({ t: "kick", reason: "removed" }, [id]);
+    setTimeout(() => dropStudent(id), 500);
+  }
+  $("muteAll").onclick = () => { bcast({ t: "mute" }); toast("Muted all students.", { ms: 2500 }); };
+  $("lockClass").onchange = (e) => { locked = e.target.checked; if (!locked) turnedAway.clear(); toast(locked ? "🔒 Class locked. No new students can join." : "🔓 Class unlocked.", { ms: 2500 }); };
+  $("chatOnChk").onchange = (e) => { chatEnabled(e.target.checked); bcast({ t: "chatlock", on: chatOn }); toast(chatOn ? "Student chat is on." : "Student chat is off.", { ms: 2500 }); };
+  $("attDl").onclick = () => { if (!attendance.length) { toast("No attendance yet."); return; } downloadAttendance(); };
+  const csvCell = (v) => { let t = String(v == null ? "" : v); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"'; };
+  function downloadAttendance() {
+    const now = new Date(), fmt = (d) => d.toLocaleString();
+    const rows = [[`Class: ${APP_NAME}`], [`Room: ${ROOM_ID}`], [`Date: ${now.toLocaleDateString()}`], [], ["Name", "Joined", "Left", "Minutes present"]];
+    attendance.forEach((a) => rows.push([a.name, fmt(a.joined), a.left ? fmt(a.left) : "(still in class)", Math.round(((a.left || now) - a.joined) / 60000)]));
+    const csv = "\ufeff" + rows.map((r) => r.map(csvCell).join(",")).join("\r\n");
+    saveBlob(new Blob([csv], { type: "text/csv;charset=utf-8" }), `attendance-${ROOM_ID}-${now.toISOString().slice(0, 10)}.csv`);
+  }
+
+  /* ---- recording (teacher) ---- */
+  let recorder = null, recDisp = null, recCtx = null, recTimer = null;
+  async function startRecording() {
+    if (typeof MediaRecorder === "undefined" || !(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia)) { toast("Recording is not supported in this browser. Use desktop Chrome or Edge.", { type: "bad" }); return; }
+    toast("In the next window choose “This tab” and tick “Share tab audio” so students' voices are recorded too.", { ms: 7000 });
+    try { recDisp = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 15 }, audio: true, preferCurrentTab: true, selfBrowserSurface: "include" }); }
+    catch (e) { recDisp = null; return; }
+    try {
+      recCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const dest = recCtx.createMediaStreamDestination();
+      const da = recDisp.getAudioTracks()[0]; if (da) recCtx.createMediaStreamSource(new MediaStream([da])).connect(dest); else toast("No tab audio was shared, so only your microphone is recorded.", { type: "warn" });
+      const mic = localStream.getAudioTracks()[0]; if (mic) recCtx.createMediaStreamSource(new MediaStream([mic])).connect(dest);
+      const out = new MediaStream([...recDisp.getVideoTracks(), ...dest.stream.getAudioTracks()]);
+      const mime = ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm", "video/mp4"].find((t) => MediaRecorder.isTypeSupported(t)) || "";
+      const chunks = [];
+      recorder = new MediaRecorder(out, mime ? { mimeType: mime, videoBitsPerSecond: 1500000 } : { videoBitsPerSecond: 1500000 });
+      recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+      recorder.onstop = () => {
+        const ext = /mp4/.test(recorder.mimeType) ? "mp4" : "webm";
+        const blob = new Blob(chunks, { type: recorder.mimeType || "video/webm" });
+        try { recDisp && recDisp.getTracks().forEach((t) => t.stop()); recCtx && recCtx.close(); } catch (e) { /* ignore */ }
+        clearInterval(recTimer); recorder = null; recDisp = null; recCtx = null;
+        $("recBtn").classList.remove("rec"); $("recBtn").querySelector(".lbl").textContent = "Record"; $("recBtn").firstChild.textContent = "⏺ ";
+        showRec(false); if (!ended) bcast({ t: "rec", on: false });
+        if (blob.size) { saveBlob(blob, `class-${ROOM_ID}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.${ext}`); toast("Recording saved to your Downloads folder.", { ms: 6000 }); }
+      };
+      recDisp.getVideoTracks()[0].onended = stopRecording;
+      recorder.start(10000);
+      const t0 = Date.now();
+      const tick = () => { const sec = Math.floor((Date.now() - t0) / 1000); $("recBtn").querySelector(".lbl").textContent = `Stop ${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`; };
+      $("recBtn").classList.add("rec"); $("recBtn").firstChild.textContent = "⏹ "; tick(); recTimer = setInterval(tick, 1000);
+      showRec(true); bcast({ t: "rec", on: true });
+    } catch (e) {
+      console.warn(e); toast("Could not start recording.", { type: "bad" });
+      try { recDisp && recDisp.getTracks().forEach((t) => t.stop()); } catch (e2) { /* ignore */ } recorder = null; recDisp = null;
+    }
+  }
+  function stopRecording() { if (recorder && recorder.state !== "inactive") recorder.stop(); }
+  function finishRecording() { stopRecording(); }
+  $("recBtn").onclick = () => (recorder ? stopRecording() : startRecording());
+
+  /* ---- reliability: keep screen awake, warn before closing, network status ---- */
+  let wl = null;
+  async function keepAwake() { try { if ("wakeLock" in navigator) wl = await navigator.wakeLock.request("screen"); } catch (e) { /* ignore */ } }
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && !ended && localStream) keepAwake(); });
+  window.addEventListener("beforeunload", (e) => { if (isHost && !ended) { e.preventDefault(); e.returnValue = ""; } });
+  window.addEventListener("offline", () => { netBad(true); toast("You are offline. Reconnecting when your internet returns…", { type: "bad", ms: 4000 }); });
+  window.addEventListener("online", () => {
+    netBad(false); toast("Back online.", { ms: 2500 });
+    try { if (peer && peer.disconnected && !peer.destroyed) peer.reconnect(); } catch (e) { /* ignore */ }
+  });
   function refreshPerm() { if ($("permPanel").classList.contains("show")) renderPerm(); }
   $("allowAll").onchange = (e) => { allowAll = e.target.checked; sendPerm(); renderPerm(); };
   $("permBtn").onclick = () => { $("sharePanel").classList.remove("show"); const pn = $("permPanel"); pn.classList.toggle("show"); if (pn.classList.contains("show")) renderPerm(); };
