@@ -22,7 +22,7 @@ window.MEETING_CONFIG = {
   // (The first hash below = "change-me-123". The app warns you until you replace it.)
   TEACHERS: [
     { name: "Mohan Sir",  hash: "8eb2961d9750214f76ff37133422ee3f48100588caa32566007a6d33bea8b5fc" },
-      { name: "lallu Sir",   hash: "33ad8fe9d0c35060a5fdcbd7f05a4dab7f39c9a1fcb4b2d86969db78066f4547" },
+    { name: "lallu Sir",   hash: "33ad8fe9d0c35060a5fdcbd7f05a4dab7f39c9a1fcb4b2d86969db78066f4547" },
     // { name: "Priya Madam", hash: "PASTE-HASH-HERE", rooms: ["maths-batch-a", "maths-batch-b"] },
   ],
 
