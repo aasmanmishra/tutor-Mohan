@@ -1,27 +1,25 @@
 /* =====================  EDIT THIS FILE  =====================
    Everything you need to customise lives here. */
 window.MEETING_CONFIG = {
-  // Name shown in the app and browser tab
-  APP_NAME: "My Meeting App",
+  /* ---------- Branding ---------- */
+  APP_NAME: "My Meeting App",            // shown in the top bar, join screen and browser tab
+  TAGLINE: "Live online classes",        // small line under the name on the join screen
+  WELCOME_TEXT: "Welcome! Enter your name to join today's class.",
+  LOGO: "🎓",                            // an emoji, OR a picture file you upload, e.g. "logo.png"
+  BRAND_COLOR: "#1a73e8",                // main colour of buttons and highlights (any hex colour)
+  TEACHER_LABEL: "",                     // optional: name students see on your video, e.g. "Mohan Sir". Empty = the name you type at login
+  FOOTER_TEXT: "",                       // optional small text at the bottom of the join screen, e.g. "© 2026 Mohan Tutorials"
 
-  // Default room. Students opening the plain link land here.
-  // Make it long and random so strangers can't guess it.
-  ROOM: "SampleAppWorseParkingsCutOpenly",
-
-  // Keeps your rooms separate from other apps on the free PeerJS server.
-  // Change to something unique to you (letters/numbers/dashes).
-  NAMESPACE: "tutormohan",
+  /* ---------- Room & security ---------- */
+  ROOM: "SampleAppWorseParkingsCutOpenly", // default room. Make it long and random!
+  NAMESPACE: "tutormohan",                 // unique to you (letters/numbers/dashes)
 
   // SHA-256 hash of the teacher passcode (NOT the passcode itself).
-  // Default hash below = "change-me-123".  Make your own by opening
-  // make-passcode-hash.html in your browser, then paste the result here.
+  // Make yours with make-passcode-hash.html, then paste it here.
+  // (This default hash = "change-me-123". The app warns you until you change it.)
   HOST_PASSCODE_HASH: "8eb2961d9750214f76ff37133422ee3f48100588caa32566007a6d33bea8b5fc",
 
-  // Optional: your public page address, e.g. "https://YOURNAME.github.io/REPO/"
-  // Leave "" to use the current address automatically.
-  PUBLIC_URL: "",
-
-  // Optional TURN server for strict school/office networks, e.g.
-  // { urls: "turn:host:3478", username: "u", credential: "p" }
-  EXTRA_ICE_SERVERS: []
+  /* ---------- Optional ---------- */
+  PUBLIC_URL: "",            // e.g. "https://YOURNAME.github.io/REPO/". Empty = automatic
+  EXTRA_ICE_SERVERS: []      // TURN server for strict school networks, e.g. { urls: "turn:host:3478", username: "u", credential: "p" }
 };
