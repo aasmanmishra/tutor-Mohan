@@ -1,150 +1,144 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Whiteboard Studio</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css" />
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>My Meeting App</title>
+<link rel="stylesheet" href="style.css" />
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script>window.Peer || document.write('<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"><\/script>')</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="brand-mark">✦</span>
-      <div>
-        <strong>Whiteboard</strong>
-        <span>Studio</span>
+
+<header id="top">
+  <b id="appName">My Meeting App</b>
+  <button data-mode="video" title="Video call only">🎥 Video</button>
+  <button data-mode="split" title="Video and whiteboard side by side (drag the divider)">◧ Split</button>
+  <button data-mode="board" title="Whiteboard fills the screen, video becomes a small window">🖍 Whiteboard</button>
+  <span class="sp"></span>
+  <label id="showAllWrap" style="display:none;font-size:13px"><input type="checkbox" id="showAll" checked> Show board to guests</label>
+  <button id="shareBtn" style="display:none" title="Copy or send the meeting link to guests">🔗 Share link</button>
+  <button id="permBtn" style="display:none">👥 Permissions</button>
+  <button id="chatBtn">💬 Chat <span id="badge"></span></button>
+</header>
+
+<div id="permPanel">
+  <b>Who can draw?</b>
+  <label style="display:block;margin:8px 0"><input type="checkbox" id="allowAll"> Allow everyone</label>
+  <div id="permList"></div>
+</div>
+
+<div id="sharePanel">
+  <b>Invite students</b><br>
+  <small>Students open this link, type their name and join. Video, audio and whiteboard all run inside this page.</small>
+  <input type="text" id="shareUrl" spellcheck="false" autocomplete="off" title="You can edit this link">
+  <div class="warn" id="shareWarn">This looks like a <b>local address</b>, so it only works on this computer. Paste the public address where your page is hosted (your website, or a tunnel link such as ngrok / Cloudflare Tunnel) into the box above.</div>
+  <div class="row">
+    <button id="shareCopy" class="primary" type="button">📋 Copy link</button>
+    <button id="shareNative" type="button" style="display:none">📤 Share…</button>
+    <button id="shareWa" type="button">WhatsApp</button>
+    <button id="shareMail" type="button">✉ Email</button>
+  </div>
+  <div id="shareMsg" style="margin-top:6px;font-size:12.5px;color:#2b8a3e;min-height:1em"></div>
+</div>
+
+<div id="main" data-mode="video">
+  <div id="stage">
+    <div id="vwrap">
+      <div id="vbar"><span>Video call – drag to move</span><button id="vSplit" title="Back to split view">⤢</button></div>
+      <div id="vgrid"></div>
+      <div id="vstatus"></div>
+      <div id="vctl">
+        <button id="micBtn" title="Mute / unmute microphone">🎤</button>
+        <button id="camBtn" title="Camera on / off">📷</button>
+        <button id="scrBtn" title="Share your screen">🖥</button>
+        <button id="leaveBtn" class="leave" title="Leave the class">📞</button>
       </div>
+      <div id="vgrip" title="Drag to resize"></div>
     </div>
+    <div id="split" title="Drag to resize"></div>
 
-    <div class="board-title">
-      <span class="status-dot"></span>
-      <span id="boardName">Untitled board</span>
-      <button class="icon-button" id="renameBoard" title="Rename board">✎</button>
-    </div>
-
-    <div class="top-actions">
-      <button class="secondary-button" id="clearBoard">Clear board</button>
-      <button class="primary-button" id="exportBoard">Export PNG <span>↓</span></button>
-    </div>
-  </header>
-
-  <main class="workspace">
-    <aside class="toolbar-panel">
-      <div class="tool-group">
-        <p class="eyebrow">Tools</p>
-        <button class="tool active" data-tool="pen" title="Pen (P)">
-          <span class="tool-icon">✎</span>
-          <span>Pen</span>
-          <kbd>P</kbd>
-        </button>
-        <button class="tool" data-tool="highlighter" title="Highlighter (H)">
-          <span class="tool-icon highlight-icon">▰</span>
-          <span>Highlighter</span>
-          <kbd>H</kbd>
-        </button>
-        <button class="tool" data-tool="eraser" title="Eraser (E)">
-          <span class="tool-icon">⌫</span>
-          <span>Eraser</span>
-          <kbd>E</kbd>
-        </button>
-      </div>
-
-      <div class="tool-group shape-tools">
-        <p class="eyebrow">Shapes</p>
-        <button class="tool" data-tool="line" title="Line (L)">
-          <span class="tool-icon">╱</span>
-          <span>Line</span>
-          <kbd>L</kbd>
-        </button>
-        <button class="tool" data-tool="rectangle" title="Rectangle (R)">
-          <span class="tool-icon">▢</span>
-          <span>Rectangle</span>
-          <kbd>R</kbd>
-        </button>
-        <button class="tool" data-tool="circle" title="Circle (C)">
-          <span class="tool-icon">○</span>
-          <span>Circle</span>
-          <kbd>C</kbd>
-        </button>
-        <button class="tool" data-tool="arrow" title="Arrow (A)">
-          <span class="tool-icon">↗</span>
-          <span>Arrow</span>
-          <kbd>A</kbd>
-        </button>
-        <button class="tool" data-tool="text" title="Text (T)">
-          <span class="tool-icon">T</span>
-          <span>Text</span>
-          <kbd>T</kbd>
-        </button>
-      </div>
-
-      <div class="tool-group settings-group">
-        <p class="eyebrow">Style</p>
-        <label class="color-control">
-          <span>Color</span>
-          <input type="color" id="colorPicker" value="#263238" />
-          <span class="color-value" id="colorValue">#263238</span>
-        </label>
-
-        <label class="range-control">
-          <span>Stroke <output id="widthValue">4px</output></span>
-          <input type="range" id="strokeWidth" min="1" max="24" value="4" />
-        </label>
-      </div>
-
-      <div class="tip">
-        <span>⌘</span>
-        <div>
-          <strong>Quick tip</strong>
-          <p>Hold <b>Shift</b> while drawing to make perfect shapes.</p>
+    <section id="board">
+      <div id="opts">
+        <div class="grp" id="colors"><input type="color" id="colorPick" value="#111111" title="Custom colour"></div>
+        <div class="grp">
+          <label>Thickness <input type="range" id="size" min="1" max="30" value="4"></label><span id="sizeLbl">4</span>
+          <label><input type="checkbox" id="fill"> Fill</label>
+        </div>
+        <div class="grp">
+          <button id="undoBtn" title="Undo (Ctrl+Z)">↶</button>
+          <button id="redoBtn" title="Redo (Ctrl+Y)">↷</button>
+        </div>
+        <div class="grp">
+          <button id="zOut" title="Zoom out">−</button>
+          <span id="zLbl" style="min-width:42px;text-align:center">100%</span>
+          <button id="zIn" title="Zoom in">+</button>
+          <button id="zFit" title="Fit to screen">Fit</button>
+        </div>
+        <div class="grp">
+          <button id="pdfBtn" title="Open a PDF from your computer">📄 PDF</button>
+          <input type="file" id="pdfFile" accept="application/pdf" hidden>
+          <button id="pPrev" title="Previous page">◀</button>
+          <span id="pLbl" style="min-width:64px;text-align:center">Board</span>
+          <button id="pNext" title="Next page">▶</button>
+          <button id="pBoard" title="Back to the blank board">Blank board</button>
+          <label title="When on, everyone sees the PDF page you show"><input type="checkbox" id="share" checked> Share</label>
+        </div>
+        <div class="grp">
+          <button id="saveBtn" title="Save the current view as PNG">💾 PNG</button>
+          <button id="clearBtn" title="Clear this page for everyone">🗑 Clear</button>
+          <span id="syncLbl" style="font-size:12px;color:#6b7280"></span>
         </div>
       </div>
-    </aside>
-
-    <section class="canvas-area">
-      <div class="canvas-toolbar">
-        <div class="canvas-hint">
-          <span class="live-dot"></span>
-          <span>Autosaved just now</span>
+      <div id="bmain">
+        <div id="tools">
+          <button data-tool="select" title="Select / move (V)">⬉</button>
+          <button data-tool="hand" title="Pan (H, or hold Space, or middle mouse)">✋</button>
+          <hr>
+          <button data-tool="pen" title="Pen (P)">✏️</button>
+          <button data-tool="hl" title="Highlighter (M)">🖍️</button>
+          <button data-tool="eraser" title="Eraser (E)">🧽</button>
+          <hr>
+          <button data-tool="line" title="Line (L)">╱</button>
+          <button data-tool="arrow" title="Arrow (A)">➜</button>
+          <button data-tool="rect" title="Rectangle (R)">▭</button>
+          <button data-tool="ellipse" title="Ellipse (O)">◯</button>
+          <button data-tool="text" title="Text (T)">T</button>
         </div>
-
-        <div class="canvas-actions">
-          <button class="round-button" id="undo" title="Undo (⌘ Z)">↶</button>
-          <button class="round-button" id="redo" title="Redo (⌘ Shift Z)">↷</button>
-          <span class="divider"></span>
-          <button class="round-button" id="toggleGrid" title="Toggle grid">⊞</button>
-
-          <div class="zoom-control">
-            <button id="zoomOut">−</button>
-            <span id="zoomValue">100%</span>
-            <button id="zoomIn">+</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="canvas-wrap" id="canvasWrap">
-        <canvas id="boardCanvas"></canvas>
-
-        <div class="empty-state" id="emptyState">
-          <div class="empty-icon">✦</div>
-          <h1>Start with an idea</h1>
-          <p>Draw, sketch, and bring your thoughts to life.</p>
-          <button class="primary-button" id="startDrawing">Start drawing <span>→</span></button>
-        </div>
-      </div>
-
-      <div class="canvas-footer">
-        <span><b id="objectCount">0</b> objects</span>
-        <span>Press <kbd>?</kbd> for shortcuts</span>
+        <div id="cvwrap"><canvas id="cv"></canvas><div id="viewOnly">View only – the host can give you drawing access</div></div>
       </div>
     </section>
-  </main>
+  </div>
 
-  <div class="toast" id="toast">Saved</div>
+  <aside id="chat">
+    <h3>Chat</h3>
+    <div id="chatLog"></div>
+    <form id="chatForm" autocomplete="off">
+      <input id="chatInput" placeholder="Type a message…" />
+      <button id="chatSend" type="submit">Send</button>
+    </form>
+  </aside>
+</div>
 
-  <script src="app.js"></script>
+<div id="prejoin">
+  <div class="card">
+    <h1 id="pjName">My Meeting App</h1>
+    <label>Your name <input id="pjUser" maxlength="40" placeholder="Enter your name" autocomplete="name"></label>
+    <label id="pjTeacherRow" style="display:none">Teacher passcode <input id="pjPass" type="password" autocomplete="current-password"></label>
+    <div class="btns"><button id="pjStudent" class="primary" type="button">Join class</button><button id="pjTeacher" type="button">Teacher login</button></div>
+    <p class="muted" id="pjMsg"></p>
+    <p class="muted">Your browser will ask to use your camera and microphone. Please allow both.</p>
+  </div>
+</div>
+
+<div id="ended">
+  <h1 id="endedName">My Meeting App</h1>
+  <p>The class has ended. Thanks for joining!</p>
+  <button id="rejoin" type="button">Rejoin class</button>
+</div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
