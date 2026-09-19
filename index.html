@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="theme-color" content="#111827" />
 <title>My Meeting App</title>
 <link rel="stylesheet" href="style.css" />
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
@@ -12,21 +13,36 @@
 <body>
 
 <header id="top">
+  <span id="brandLogo" class="brandLogo"></span>
   <b id="appName">My Meeting App</b>
-  <button data-mode="video" title="Video call only">🎥 Video</button>
-  <button data-mode="split" title="Video and whiteboard side by side (drag the divider)">◧ Split</button>
-  <button data-mode="board" title="Whiteboard fills the screen, video becomes a small window">🖍 Whiteboard</button>
+  <span id="netDot" class="netDot" title="Connection status"></span>
+  <div class="seg">
+    <button data-mode="video" title="Video call only">🎥 <span class="lbl">Video</span></button>
+    <button data-mode="split" title="Video and whiteboard side by side (drag the divider)">◧ <span class="lbl">Split</span></button>
+    <button data-mode="board" title="Whiteboard fills the screen, video becomes a small window">🖍 <span class="lbl">Whiteboard</span></button>
+  </div>
   <span class="sp"></span>
-  <label id="showAllWrap" style="display:none;font-size:13px"><input type="checkbox" id="showAll" checked> Show board to guests</label>
-  <button id="shareBtn" style="display:none" title="Copy or send the meeting link to guests">🔗 Share link</button>
-  <button id="permBtn" style="display:none">👥 Permissions</button>
-  <button id="chatBtn">💬 Chat <span id="badge"></span></button>
+  <span id="recBadge" class="recBadge" style="display:none">● REC</span>
+  <label id="showAllWrap" style="display:none;font-size:13px"><input type="checkbox" id="showAll" checked> <span class="lbl">Show board to guests</span></label>
+  <button id="recBtn" style="display:none" title="Record the class (saved to your computer)">⏺ <span class="lbl">Record</span></button>
+  <button id="shareBtn" style="display:none" title="Copy or send the meeting link to guests">🔗 <span class="lbl">Share link</span></button>
+  <button id="permBtn" style="display:none" title="Manage students: attendance, mute, remove, drawing access">👥 <span class="lbl">People</span> <span id="handBadge" class="hbadge" style="display:none"></span></button>
+  <button id="chatBtn">💬 <span class="lbl">Chat</span> <span id="badge"></span></button>
 </header>
+<div id="toasts"></div>
 
 <div id="permPanel">
-  <b>Who can draw?</b>
-  <label style="display:block;margin:8px 0"><input type="checkbox" id="allowAll"> Allow everyone</label>
+  <div class="ph"><b>People</b> <span id="pCount" class="muted2"></span></div>
+  <div class="popts">
+    <label><input type="checkbox" id="allowAll"> Everyone can draw on the board</label>
+    <label><input type="checkbox" id="chatOnChk" checked> Students can chat</label>
+    <label title="Blocks new students from joining. Students already inside stay."><input type="checkbox" id="lockClass"> Lock class (no new joins)</label>
+  </div>
   <div id="permList"></div>
+  <div class="pbtns">
+    <button id="muteAll" type="button">🔇 Mute all</button>
+    <button id="attDl" type="button">⬇ Attendance (CSV)</button>
+  </div>
 </div>
 
 <div id="sharePanel">
@@ -52,6 +68,7 @@
       <div id="vctl">
         <button id="micBtn" title="Mute / unmute microphone">🎤</button>
         <button id="camBtn" title="Camera on / off">📷</button>
+        <button id="handBtn" title="Raise / lower your hand" style="display:none">✋</button>
         <button id="scrBtn" title="Share your screen">🖥</button>
         <button id="leaveBtn" class="leave" title="Leave the class">📞</button>
       </div>
@@ -123,18 +140,27 @@
 
 <div id="prejoin">
   <div class="card">
+    <div id="pjLogo" class="pjLogo"></div>
     <h1 id="pjName">My Meeting App</h1>
-    <label>Your name <input id="pjUser" maxlength="40" placeholder="Enter your name" autocomplete="name"></label>
+    <p id="pjTag" class="pjTag"></p>
+    <p id="pjWelcome" class="pjWelcome"></p>
+    <label>Your name <input id="pjUser" maxlength="40" placeholder="Enter your full name" autocomplete="name"></label>
     <label id="pjTeacherRow" style="display:none">Teacher passcode <input id="pjPass" type="password" autocomplete="current-password"></label>
     <div class="btns"><button id="pjStudent" class="primary" type="button">Join class</button><button id="pjTeacher" type="button">Teacher login</button></div>
     <p class="muted" id="pjMsg"></p>
-    <p class="muted">Your browser will ask to use your camera and microphone. Please allow both.</p>
+    <ul class="pjTips">
+      <li>📷 Allow camera and microphone when your browser asks.</li>
+      <li>🎧 Use headphones to avoid echo.</li>
+      <li>🌐 Use Chrome, Edge or Safari for the best experience.</li>
+    </ul>
+    <p class="pjFoot" id="pjFoot"></p>
   </div>
 </div>
 
 <div id="ended">
+  <div id="endedLogo" class="pjLogo"></div>
   <h1 id="endedName">My Meeting App</h1>
-  <p>The class has ended. Thanks for joining!</p>
+  <p id="endedMsg">The class has ended. Thanks for joining!</p>
   <button id="rejoin" type="button">Rejoin class</button>
 </div>
 
