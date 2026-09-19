@@ -4,7 +4,12 @@ const CFG = window.MEETING_CONFIG || {};
 const ROOM = CFG.ROOM || "class";
 const NAMESPACE = CFG.NAMESPACE || "meetingapp";
 const APP_NAME = CFG.APP_NAME || "My Meeting App";
-const HOST_PASSCODE_HASH = String(CFG.HOST_PASSCODE_HASH || "").toLowerCase();
+// Teachers: each has their own passcode hash (and optionally the rooms they may host).
+// The old single HOST_PASSCODE_HASH setting still works as an unnamed teacher.
+const TEACHERS = (Array.isArray(CFG.TEACHERS) ? CFG.TEACHERS : [])
+  .map((t) => ({ name: String((t && t.name) || "").trim().slice(0, 40), hash: String((t && t.hash) || "").trim().toLowerCase(), rooms: t && Array.isArray(t.rooms) && t.rooms.length ? t.rooms : null }))
+  .filter((t) => t.hash);
+if (CFG.HOST_PASSCODE_HASH) TEACHERS.push({ name: "", hash: String(CFG.HOST_PASSCODE_HASH).trim().toLowerCase(), rooms: null });
 const EXTRA_ICE_SERVERS = Array.isArray(CFG.EXTRA_ICE_SERVERS) ? CFG.EXTRA_ICE_SERVERS : [];
 const PUBLIC_URL = CFG.PUBLIC_URL || "";
 const LOGO = CFG.LOGO || "🎓";
@@ -325,6 +330,8 @@ window.addEventListener("load", () => {
     $("pjTeacherRow").style.display = on ? "" : "none";
     $("pjTeacher").textContent = on ? "Start class" : "Teacher login";
     $("pjTeacher").classList.toggle("primary", on); $("pjStudent").classList.toggle("primary", !on);
+    const named = TEACHERS.length && TEACHERS.every((t) => t.name);
+    $("pjUser").parentElement.style.display = on && named ? "none" : "";
     if (on) $("pjPass").focus();
   }
   if (ROLE_PARAM === "student") $("pjTeacher").style.display = "none";
@@ -332,20 +339,25 @@ window.addEventListener("load", () => {
   let fails = 0, lockUntil = 0;
   async function enter(asHost) {
     if (entering) return;
+    let who = null;   // the teacher whose passcode matched
     if (typeof Peer === "undefined") { pjMsg("Could not load the connection library. Check your internet and reload."); return; }
     if (asHost) {
       const wait = Math.ceil((lockUntil - Date.now()) / 1000);
       if (wait > 0) { pjMsg(`Too many wrong attempts. Try again in ${wait}s.`); return; }
-      let ok = false;
-      try { ok = (await sha256Hex($("pjPass").value)) === HOST_PASSCODE_HASH; }
+      let h = "";
+      try { h = await sha256Hex($("pjPass").value); }
       catch (e) { pjMsg("Passcode check needs HTTPS (GitHub Pages) or localhost."); return; }
-      if (!ok) {
+      who = TEACHERS.find((t) => t.hash === h) || null;
+      if (!who) {
         fails++; if (fails >= 3) lockUntil = Date.now() + Math.min(300, (fails - 2) * 15) * 1000;
         pjMsg("Wrong passcode"); return;
       }
       fails = 0;
+      if (who.rooms && !who.rooms.some((r) => cleanId(r).toLowerCase() === ROOM_ID.toLowerCase())) {
+        pjMsg("This passcode is not allowed to host this class room."); return;
+      }
     }
-    const nm = $("pjUser").value.trim() || (asHost ? "Teacher" : "");
+    const nm = (asHost && who && who.name) || $("pjUser").value.trim() || (asHost ? "Teacher" : "");
     if (!nm) { pjMsg("Please enter your name"); return; }
     entering = true; myName = nm; pjMsg("");
     try { localStorage.setItem("meeting-name", nm); } catch (e) { /* ignore */ }
@@ -356,9 +368,10 @@ window.addEventListener("load", () => {
     keepAwake();
     ensureTile("self", myName, true).v.srcObject = localStream;
     if (asHost) {
-      isHost = true; teacherName = TEACHER_LABEL || myName;
+      isHost = true; teacherName = (who && who.name) || TEACHER_LABEL || myName;
       $("recBtn").style.display = "";
-      if (HOST_PASSCODE_HASH === DEFAULT_HASH) toast("⚠ You are still using the default teacher passcode. Set your own HOST_PASSCODE_HASH in config.js.", { type: "warn", ms: 0 });
+      if (TEACHERS.some((t) => t.hash === DEFAULT_HASH)) toast("⚠ A teacher is still using the default passcode (change-me-123). Replace its hash in config.js.", { type: "warn", ms: 0 });
+      toast(`Logged in as ${teacherName}`, { ms: 3000 });
       if (ROOM_ID === cleanId(DEFAULT_ROOM)) toast("⚠ Change ROOM and NAMESPACE in config.js so your class link is unique and hard to guess.", { type: "warn", ms: 0 });
       $("shareBtn").style.display = ""; $("permBtn").style.display = ""; $("showAllWrap").style.display = "";
       recalc(); startHost();
@@ -1021,7 +1034,7 @@ window.addEventListener("load", () => {
   const csvCell = (v) => { let t = String(v == null ? "" : v); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"'; };
   function downloadAttendance() {
     const now = new Date(), fmt = (d) => d.toLocaleString();
-    const rows = [[`Class: ${APP_NAME}`], [`Room: ${ROOM_ID}`], [`Date: ${now.toLocaleDateString()}`], [], ["Name", "Joined", "Left", "Minutes present"]];
+    const rows = [[`Class: ${APP_NAME}`], [`Room: ${ROOM_ID}`], [`Teacher: ${teacherName}`], [`Date: ${now.toLocaleDateString()}`], [], ["Name", "Joined", "Left", "Minutes present"]];
     attendance.forEach((a) => rows.push([a.name, fmt(a.joined), a.left ? fmt(a.left) : "(still in class)", Math.round(((a.left || now) - a.joined) / 60000)]));
     const csv = "\ufeff" + rows.map((r) => r.map(csvCell).join(",")).join("\r\n");
     saveBlob(new Blob([csv], { type: "text/csv;charset=utf-8" }), `attendance-${ROOM_ID}-${now.toISOString().slice(0, 10)}.csv`);
@@ -1051,7 +1064,7 @@ window.addEventListener("load", () => {
         clearInterval(recTimer); recorder = null; recDisp = null; recCtx = null;
         $("recBtn").classList.remove("rec"); $("recBtn").querySelector(".lbl").textContent = "Record"; $("recBtn").firstChild.textContent = "⏺ ";
         showRec(false); if (!ended) bcast({ t: "rec", on: false });
-        if (blob.size) { saveBlob(blob, `class-${ROOM_ID}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.${ext}`); toast("Recording saved to your Downloads folder.", { ms: 6000 }); }
+        if (blob.size) { saveBlob(blob, `class-${ROOM_ID}-${teacherName.replace(/[^A-Za-z0-9]+/g, "").slice(0, 20) || "teacher"}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.${ext}`); toast("Recording saved to your Downloads folder.", { ms: 6000 }); }
       };
       recDisp.getVideoTracks()[0].onended = stopRecording;
       recorder.start(10000);
