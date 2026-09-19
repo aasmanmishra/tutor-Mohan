@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Whiteboard Studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">✦</span>
+      <div>
+        <strong>Whiteboard</strong>
+        <span>Studio</span>
+      </div>
+    </div>
+
+    <div class="board-title">
+      <span class="status-dot"></span>
+      <span id="boardName">Untitled board</span>
+      <button class="icon-button" id="renameBoard" title="Rename board">✎</button>
+    </div>
+
+    <div class="top-actions">
+      <button class="secondary-button" id="clearBoard">Clear board</button>
+      <button class="primary-button" id="exportBoard">Export PNG <span>↓</span></button>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <aside class="toolbar-panel">
+      <div class="tool-group">
+        <p class="eyebrow">Tools</p>
+        <button class="tool active" data-tool="pen" title="Pen (P)">
+          <span class="tool-icon">✎</span>
+          <span>Pen</span>
+          <kbd>P</kbd>
+        </button>
+        <button class="tool" data-tool="highlighter" title="Highlighter (H)">
+          <span class="tool-icon highlight-icon">▰</span>
+          <span>Highlighter</span>
+          <kbd>H</kbd>
+        </button>
+        <button class="tool" data-tool="eraser" title="Eraser (E)">
+          <span class="tool-icon">⌫</span>
+          <span>Eraser</span>
+          <kbd>E</kbd>
+        </button>
+      </div>
+
+      <div class="tool-group shape-tools">
+        <p class="eyebrow">Shapes</p>
+        <button class="tool" data-tool="line" title="Line (L)">
+          <span class="tool-icon">╱</span>
+          <span>Line</span>
+          <kbd>L</kbd>
+        </button>
+        <button class="tool" data-tool="rectangle" title="Rectangle (R)">
+          <span class="tool-icon">▢</span>
+          <span>Rectangle</span>
+          <kbd>R</kbd>
+        </button>
+        <button class="tool" data-tool="circle" title="Circle (C)">
+          <span class="tool-icon">○</span>
+          <span>Circle</span>
+          <kbd>C</kbd>
+        </button>
+        <button class="tool" data-tool="arrow" title="Arrow (A)">
+          <span class="tool-icon">↗</span>
+          <span>Arrow</span>
+          <kbd>A</kbd>
+        </button>
+        <button class="tool" data-tool="text" title="Text (T)">
+          <span class="tool-icon">T</span>
+          <span>Text</span>
+          <kbd>T</kbd>
+        </button>
+      </div>
+
+      <div class="tool-group settings-group">
+        <p class="eyebrow">Style</p>
+        <label class="color-control">
+          <span>Color</span>
+          <input type="color" id="colorPicker" value="#263238" />
+          <span class="color-value" id="colorValue">#263238</span>
+        </label>
+
+        <label class="range-control">
+          <span>Stroke <output id="widthValue">4px</output></span>
+          <input type="range" id="strokeWidth" min="1" max="24" value="4" />
+        </label>
+      </div>
+
+      <div class="tip">
+        <span>⌘</span>
+        <div>
+          <strong>Quick tip</strong>
+          <p>Hold <b>Shift</b> while drawing to make perfect shapes.</p>
+        </div>
+      </div>
+    </aside>
+
+    <section class="canvas-area">
+      <div class="canvas-toolbar">
+        <div class="canvas-hint">
+          <span class="live-dot"></span>
+          <span>Autosaved just now</span>
+        </div>
+
+        <div class="canvas-actions">
+          <button class="round-button" id="undo" title="Undo (⌘ Z)">↶</button>
+          <button class="round-button" id="redo" title="Redo (⌘ Shift Z)">↷</button>
+          <span class="divider"></span>
+          <button class="round-button" id="toggleGrid" title="Toggle grid">⊞</button>
+
+          <div class="zoom-control">
+            <button id="zoomOut">−</button>
+            <span id="zoomValue">100%</span>
+            <button id="zoomIn">+</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="canvas-wrap" id="canvasWrap">
+        <canvas id="boardCanvas"></canvas>
+
+        <div class="empty-state" id="emptyState">
+          <div class="empty-icon">✦</div>
+          <h1>Start with an idea</h1>
+          <p>Draw, sketch, and bring your thoughts to life.</p>
+          <button class="primary-button" id="startDrawing">Start drawing <span>→</span></button>
+        </div>
+      </div>
+
+      <div class="canvas-footer">
+        <span><b id="objectCount">0</b> objects</span>
+        <span>Press <kbd>?</kbd> for shortcuts</span>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast">Saved</div>
+
+  <script src="app.js"></script>
+</body>
+</html>
