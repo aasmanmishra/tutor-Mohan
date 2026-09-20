@@ -4,8 +4,20 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <meta name="theme-color" content="#111827" />
-<title>My Meeting App</title>
+<title>Tutor Mohan</title>
 <link rel="stylesheet" href="style.css" />
+<script>
+/* shows a red bar if any script fails, so problems are easy to report */
+window.addEventListener("error", function (e) {
+  var b = document.getElementById("errBar");
+  if (!b) { b = document.createElement("div"); b.id = "errBar";
+    b.style.cssText = "position:fixed;left:0;right:0;bottom:0;z-index:99999;background:#b91c1c;color:#fff;font:13px/1.4 system-ui,sans-serif;padding:8px 12px";
+    (document.body || document.documentElement).appendChild(b); }
+  var f = (e.filename || "").split("/").pop();
+  b.textContent = "⚠ Error: " + (e.message || "script failed to load") + (f ? "  [" + f + ":" + (e.lineno || "?") + "]" : "") + "  — send this line to your developer.";
+}, true);
+</script>
+
 <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <script>window.Peer || document.write('<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"><\/script>')</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
@@ -13,8 +25,7 @@
 <body>
 
 <header id="top">
-  <span id="brandLogo" class="brandLogo"></span>
-  <b id="appName">My Meeting App</b>
+  <span class="brandChip"><span id="brandLogo" class="brandLogo"></span><b id="appName">Tutor Mohan</b></span>
   <span id="netDot" class="netDot" title="Connection status"></span>
   <div class="seg">
     <button data-mode="video" title="Video call only">🎥 <span class="lbl">Video</span></button>
@@ -141,7 +152,7 @@
 <div id="prejoin">
   <div class="card">
     <div id="pjLogo" class="pjLogo"></div>
-    <h1 id="pjName">My Meeting App</h1>
+    <h1 id="pjName">Tutor Mohan</h1>
     <p id="pjTag" class="pjTag"></p>
     <p id="pjWelcome" class="pjWelcome"></p>
     <label>Your name <input id="pjUser" maxlength="40" placeholder="Enter your full name" autocomplete="name"></label>
@@ -154,12 +165,13 @@
       <li>🌐 Use Chrome, Edge or Safari for the best experience.</li>
     </ul>
     <p class="pjFoot" id="pjFoot"></p>
+    <p class="pjFoot" id="pjVer" style="opacity:.6"></p>
   </div>
 </div>
 
 <div id="ended">
   <div id="endedLogo" class="pjLogo"></div>
-  <h1 id="endedName">My Meeting App</h1>
+  <h1 id="endedName">Tutor Mohan</h1>
   <p id="endedMsg">The class has ended. Thanks for joining!</p>
   <button id="rejoin" type="button">Rejoin class</button>
 </div>
