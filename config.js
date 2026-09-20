@@ -9,7 +9,7 @@ window.MEETING_CONFIG = {
   ],
   TAGLINE: "Live online classes",        // small line under the name on the join screen
   WELCOME_TEXT: "Welcome! Enter your name to join today's class.",
-  LOGO: "logo.svg",                       // an emoji, OR a picture file you upload (logo.svg / logo.png)
+  LOGO: "tutormohan-6aaf4a81d3d3d9.46707183.jpeg",                       // an emoji, OR a picture file you upload (logo.svg / logo.png)
   BRAND_COLOR: "#ff5500",                // colour of buttons and highlights (any hex colour)
   TEACHER_LABEL: "",                     // optional: name students see on your video, e.g. "Mohan Sir". Empty = the name you type at login
   FOOTER_TEXT: "",                       // optional small text at the bottom of the join screen, e.g. "© 2026 Mohan Tutorials"
