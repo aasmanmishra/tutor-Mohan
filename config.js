@@ -2,9 +2,9 @@
    Everything you need to customise lives here. */
 window.MEETING_CONFIG = {
   /* ---------- Branding ---------- */
-  APP_NAME: "Tutor Mohan",             // plain name (browser tab, attendance file)
+  APP_NAME: "tutor Mohan",             // plain name (browser tab, attendance file)
   NAME_PARTS: [                         // the coloured name shown on screen: one entry per word
-    { text: "Tutor", color: "#0a1f5c" }, // navy blue
+    { text: "tutor", color: "#0a1f5c" }, // navy blue
     { text: "Mohan", color: "#ff5500" }  // orange
   ],
   TAGLINE: "Live online classes",        // small line under the name on the join screen
