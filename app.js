@@ -26,6 +26,8 @@ const BRAND = /^#[0-9a-f]{3,8}$/i.test(CFG.BRAND_COLOR || "") ? CFG.BRAND_COLOR 
 const TEACHER_LABEL = String(CFG.TEACHER_LABEL || "").slice(0, 40);
 const DEFAULT_HASH = "8eb2961d9750214f76ff37133422ee3f48100588caa32566007a6d33bea8b5fc";
 const DEFAULT_ROOM = "SampleAppWorseParkingsCutOpenly";
+// Person-cutout model used for background blur / replacement (loaded only when someone turns an effect on)
+const SEG_BASE = "https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation@0.1.1675465747/";
 
 async function sha256Hex(text) {
   if (!(window.crypto && crypto.subtle)) throw new Error("no-crypto");
@@ -37,6 +39,24 @@ const $ = (id) => document.getElementById(id);
 const uid = () => Math.random().toString(36).slice(2, 10);
 const cl = (o) => JSON.parse(JSON.stringify(o));
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const SVGNS = "http://www.w3.org/2000/svg";
+function icon(name, cls) {
+  const s = document.createElementNS(SVGNS, "svg"); s.setAttribute("class", "ic" + (cls ? " " + cls : ""));
+  const u = document.createElementNS(SVGNS, "use"); u.setAttribute("href", "#i-" + name); s.append(u); return s;
+}
+function setIcon(btn, name) { const u = btn.querySelector("use"); if (u) u.setAttribute("href", "#i-" + name); }
+const loadScript = (src) => new Promise((res, rej) => {
+  const s = document.createElement("script"); s.src = src; s.crossOrigin = "anonymous";
+  s.onload = res; s.onerror = () => rej(new Error("Could not load " + src)); document.head.append(s);
+});
+const loadImg = (src) => new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("image")); i.src = src; });
+// a timer that keeps running in background tabs (plain setInterval is throttled to 1/sec there)
+function ticker(fn, ms) {
+  try {
+    const w = new Worker(URL.createObjectURL(new Blob([`setInterval(function(){postMessage(0)},${Math.round(ms)})`], { type: "text/javascript" })));
+    w.onmessage = fn; return () => w.terminate();
+  } catch (e) { const t = setInterval(fn, ms); return () => clearInterval(t); }
+}
 
 window.addEventListener("load", () => {
   /* =====================  VIDEO CALL (WebRTC, browser to browser)  ===================== */
@@ -46,7 +66,8 @@ window.addEventListener("load", () => {
   const HOST_PEER = `${NAMESPACE}-${ROOM_ID}-host`;
   const ROLE_PARAM = params.get("role");
   const PEER_OPTS = { debug: 1, config: { iceServers: [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:global.stun.twilio.com:3478" }, ...EXTRA_ICE_SERVERS] } };
-  let myId = null, myName = "Guest", peer = null, localStream = null, camTrack = null, screenStream = null;
+  let myId = null, myName = "Guest", peer = null, localStream = null, rawCam = null, camTrack = null, screenStream = null;
+  let hasCam = false, camOn = true;
   let leaving = false, ended = false, entering = false;
   const peers = new Map();   // peer id -> { name, conn, call }   (teacher: every student; student: only the teacher)
   const calls = new Set();
@@ -80,7 +101,7 @@ window.addEventListener("load", () => {
   $("pjTag").textContent = CFG.TAGLINE || "";
   $("pjWelcome").textContent = CFG.WELCOME_TEXT || "";
   $("pjFoot").textContent = CFG.FOOTER_TEXT || "";
-  $("pjVer").textContent = "v3 · files loaded OK";
+  $("pjVer").textContent = "v4 · files loaded OK";
   ["brandLogo", "pjLogo", "endedLogo"].forEach((id) => setLogo($(id), LOGO));
   (() => {
     const l = document.createElement("link"); l.rel = "icon";
@@ -99,6 +120,13 @@ window.addEventListener("load", () => {
     if (opts.ms !== 0) setTimeout(() => d.remove(), opts.ms || 5000);
     return d;
   }
+  // a slim warning line under the top bar (stays until dismissed, never covers the board)
+  function banner(text) {
+    const d = document.createElement("div"); d.className = "warnline";
+    const s = document.createElement("span"); s.textContent = text; d.append(s);
+    const x = document.createElement("button"); x.type = "button"; x.setAttribute("aria-label", "Dismiss"); x.append(icon("x")); x.onclick = () => d.remove(); d.append(x);
+    $("warns").append(d);
+  }
   let actx = null;
   function beep() {
     try {
@@ -111,7 +139,27 @@ window.addEventListener("load", () => {
     const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
     document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 30000);
   }
-  const netBad = (b) => $("netDot").classList.toggle("bad", !!b);
+  const netBad = (b) => { $("netPill").classList.toggle("bad", !!b); $("netLbl").textContent = b ? "Reconnecting…" : "Connected"; };
+
+  /* ---- popovers (background picker, board menu, tool flyouts) ---- */
+  function placeAbove(panel, anchor) {
+    panel.classList.add("show");
+    const r = anchor.getBoundingClientRect(), pw = panel.offsetWidth, ph = panel.offsetHeight;
+    panel.style.left = clamp(r.left + r.width / 2 - pw / 2, 10, Math.max(10, innerWidth - pw - 10)) + "px";
+    let top = r.top - ph - 12; if (top < 10) top = Math.min(r.bottom + 12, Math.max(10, innerHeight - ph - 10));
+    panel.style.top = top + "px";
+  }
+  function placeBelow(panel, anchor) {
+    panel.classList.add("show");
+    const r = anchor.getBoundingClientRect(), pw = panel.offsetWidth;
+    panel.style.left = clamp(r.right - pw, 10, Math.max(10, innerWidth - pw - 10)) + "px";
+    panel.style.top = r.bottom + 8 + "px";
+  }
+  document.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", () => { $(b.dataset.close).classList.remove("show"); syncPanelBtns(); }));
+  function syncPanelBtns() {
+    $("permBtn").classList.toggle("active", $("permPanel").classList.contains("show"));
+    $("shareBtn").classList.toggle("active", $("sharePanel").classList.contains("show"));
+  }
 
   function setStatus(t) { const el = $("vstatus"); el.textContent = t || ""; el.style.display = t ? "block" : "none"; }
   function ensureTile(id, name, self) {
@@ -120,12 +168,13 @@ window.addEventListener("load", () => {
       const d = document.createElement("div"); d.className = "tile" + (self ? " self" : "");
       const v = document.createElement("video"); v.autoplay = true; v.playsInline = true; if (self) v.muted = true;
       const n = document.createElement("span"); n.className = "nm";
-      d.append(v, n); $("vgrid").append(d); t = { d, v, n }; tiles.set(id, t);
+      d.append(v, n); $("vgrid").append(d); t = { d, v, n }; tiles.set(id, t); updGrid();
     }
     if (name) t.n.textContent = name + (self ? " (you)" : "");
     return t;
   }
-  function dropTile(id) { const t = tiles.get(id); if (t) { t.d.remove(); tiles.delete(id); } }
+  function dropTile(id) { const t = tiles.get(id); if (t) { t.d.remove(); tiles.delete(id); updGrid(); } }
+  function updGrid() { $("vgrid").classList.toggle("multi", tiles.size > 1); }   // several people: neat 16:9 tiles
 
   /* ---- camera / microphone ---- */
   function blackTrack() { const c = document.createElement("canvas"); c.width = c.height = 16; c.getContext("2d").fillRect(0, 0, 16, 16); return c.captureStream(5).getVideoTracks()[0]; }
@@ -140,6 +189,7 @@ window.addEventListener("load", () => {
       }
     }
     if (!st) st = new MediaStream();
+    hasCam = st.getVideoTracks().length > 0;
     // a call needs one video and one audio track in each direction, even if the camera or microphone is missing
     if (!st.getVideoTracks().length) st.addTrack(blackTrack());
     if (!st.getAudioTracks().length) { const a = silentTrack(); if (a) st.addTrack(a); }
@@ -150,12 +200,18 @@ window.addEventListener("load", () => {
 
   function setMic(on) {
     const t = localStream && localStream.getAudioTracks()[0]; if (!t) return;
-    t.enabled = on; $("micBtn").classList.toggle("off", !on); $("micBtn").textContent = on ? "🎤" : "🔇";
+    t.enabled = on; $("micBtn").classList.toggle("off", !on); setIcon($("micBtn"), on ? "mic" : "mic-off");
+    $("micBtn").setAttribute("aria-pressed", String(!on));
   }
   $("micBtn").onclick = () => { const t = localStream && localStream.getAudioTracks()[0]; if (t) setMic(!t.enabled); };
+  function setCam(on) {
+    camOn = on; if (rawCam) rawCam.enabled = on; if (fx.track) fx.track.enabled = on;
+    $("camBtn").classList.toggle("off", !on); setIcon($("camBtn"), on ? "cam" : "cam-off");
+    $("camBtn").setAttribute("aria-pressed", String(!on));
+  }
   $("camBtn").onclick = () => {
-    if (!camTrack) return;
-    camTrack.enabled = !camTrack.enabled; $("camBtn").classList.toggle("off", !camTrack.enabled); $("camBtn").textContent = camTrack.enabled ? "📷" : "🚫";
+    if (!hasCam) { toast("No camera was found on this device.", { type: "warn" }); return; }
+    setCam(!camOn);
   };
   function setOutVideo(track) {
     calls.forEach((c) => {
@@ -165,6 +221,8 @@ window.addEventListener("load", () => {
     const t = tiles.get("self");
     if (t) { t.v.srcObject = new MediaStream([track, ...localStream.getAudioTracks()]); t.d.classList.toggle("screen", !!screenStream); }
   }
+  // switch which camera picture (plain or with background effect) is sent and shown
+  function applyCamTrack(track) { camTrack = track; track.enabled = camOn; if (!screenStream) setOutVideo(track); }
   async function toggleScreen() {
     if (screenStream) { stopScreen(); return; }
     try { screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true }); } catch (e) { screenStream = null; return; }
@@ -179,6 +237,208 @@ window.addEventListener("load", () => {
   $("scrBtn").onclick = toggleScreen;
   if (!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia)) $("scrBtn").style.display = "none";
 
+  /* ---- background effects: blur or replace (each person's own camera, on their own device) ---- */
+  const BG_KEY = "meeting-bg", BG_CUSTOM_KEY = "meeting-bg-custom";
+  const FX_MAX_W = 960;   // effects are processed at up to 960 px wide, which keeps older laptops smooth
+  const fx = { avg: 0, frames: 0, nextAt: 0, mode: "none", want: "none", seg: null, segP: null, video: null, canvas: null, ctx: null, track: null, stopTick: null, busy: false, bgSrc: null, small: null, canFilter: false, custom: null, customImg: null, customReady: null, applyOnFrame: false };
+  const rnd = (seed) => () => { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const PRESETS = [
+    { id: "study", name: "Study", draw(g, w, h) {
+      const gr = g.createLinearGradient(0, 0, w, h); gr.addColorStop(0, "#0a1f5c"); gr.addColorStop(1, "#2457d6");
+      g.fillStyle = gr; g.fillRect(0, 0, w, h);
+      g.fillStyle = "rgba(255,255,255,.09)"; const s = w / 32;
+      for (let y = s / 2; y < h; y += s) for (let x = s / 2; x < w; x += s) { g.beginPath(); g.arc(x, y, s * .055, 0, 6.2832); g.fill(); }
+    } },
+    { id: "sunrise", name: "Sunrise", draw(g, w, h) {
+      const gr = g.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, "#ffd9b8"); gr.addColorStop(.55, "#ff9a5c"); gr.addColorStop(1, "#e2400b");
+      g.fillStyle = gr; g.fillRect(0, 0, w, h);
+      const r = g.createRadialGradient(w * .5, h * 1.02, 0, w * .5, h * 1.02, h * .95); r.addColorStop(0, "rgba(255,247,210,.95)"); r.addColorStop(1, "rgba(255,247,210,0)");
+      g.fillStyle = r; g.fillRect(0, 0, w, h);
+    } },
+    { id: "chalk", name: "Chalkboard", draw(g, w, h) {
+      const gr = g.createLinearGradient(0, 0, w, h); gr.addColorStop(0, "#1c3a30"); gr.addColorStop(1, "#2b5646");
+      g.fillStyle = gr; g.fillRect(0, 0, w, h);
+      const R = rnd(7); g.fillStyle = "rgba(255,255,255,.05)";
+      for (let i = 0; i < 260; i++) { g.beginPath(); g.ellipse(R() * w, R() * h, R() * w * .05 + 2, R() * h * .012 + 1, R() * 3, 0, 6.2832); g.fill(); }
+      const v = g.createRadialGradient(w / 2, h / 2, h * .3, w / 2, h / 2, w * .75); v.addColorStop(0, "rgba(0,0,0,0)"); v.addColorStop(1, "rgba(0,0,0,.4)");
+      g.fillStyle = v; g.fillRect(0, 0, w, h);
+      g.fillStyle = "#6b4a2b"; g.fillRect(0, h * .94, w, h * .06);
+    } },
+    { id: "graph", name: "Graph paper", draw(g, w, h) {
+      g.fillStyle = "#f5f8fc"; g.fillRect(0, 0, w, h);
+      const s = w / 40;
+      for (let i = 0, x = 0; x <= w; x += s, i++) { g.strokeStyle = i % 5 ? "rgba(59,130,246,.16)" : "rgba(59,130,246,.34)"; g.lineWidth = i % 5 ? 1 : 1.6; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); }
+      for (let i = 0, y = 0; y <= h; y += s, i++) { g.strokeStyle = i % 5 ? "rgba(59,130,246,.16)" : "rgba(59,130,246,.34)"; g.lineWidth = i % 5 ? 1 : 1.6; g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+    } },
+    { id: "ruled", name: "Notebook", draw(g, w, h) {
+      g.fillStyle = "#fbf7ec"; g.fillRect(0, 0, w, h);
+      const s = h / 12; g.strokeStyle = "rgba(59,130,246,.3)"; g.lineWidth = 1.4;
+      for (let y = s * 1.5; y < h; y += s) { g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+      g.strokeStyle = "rgba(239,68,68,.5)"; g.lineWidth = 2; g.beginPath(); g.moveTo(w * .13, 0); g.lineTo(w * .13, h); g.stroke();
+    } },
+    { id: "sky", name: "Sky", draw(g, w, h) {
+      const gr = g.createLinearGradient(0, 0, 0, h); gr.addColorStop(0, "#4fa3f7"); gr.addColorStop(1, "#dcefff");
+      g.fillStyle = gr; g.fillRect(0, 0, w, h);
+      const R = rnd(21);
+      for (let i = 0; i < 7; i++) {
+        const cx = R() * w, cy = h * (.15 + R() * .6), rr = w * (.08 + R() * .08);
+        const c = g.createRadialGradient(cx, cy, 0, cx, cy, rr); c.addColorStop(0, "rgba(255,255,255,.85)"); c.addColorStop(1, "rgba(255,255,255,0)");
+        g.fillStyle = c; g.beginPath(); g.ellipse(cx, cy, rr * 1.7, rr * .8, 0, 0, 6.2832); g.fill();
+      }
+    } },
+  ];
+  function makePreset(id, w, h) {
+    const p = PRESETS.find((x) => x.id === id) || PRESETS[0];
+    const c = document.createElement("canvas"); c.width = w; c.height = h; p.draw(c.getContext("2d"), w, h); return c;
+  }
+  const saveBg = (m) => { try { localStorage.setItem(BG_KEY, m); } catch (e) { /* ignore */ } };
+  try {
+    const cu = localStorage.getItem(BG_CUSTOM_KEY);
+    if (cu) { fx.custom = cu; fx.customReady = loadImg(cu).then((i) => { fx.customImg = i; }).catch(() => { fx.custom = null; }); }
+  } catch (e) { /* ignore */ }
+
+  function drawCover(g, src, w, h) {
+    const sw = src.videoWidth || src.naturalWidth || src.width, sh = src.videoHeight || src.naturalHeight || src.height; if (!sw || !sh) return;
+    const r = Math.max(w / sw, h / sh), dw = sw * r, dh = sh * r; g.drawImage(src, (w - dw) / 2, (h - dh) / 2, dw, dh);
+  }
+  function softBlur(g, img, w, h, k) {
+    const s = fx.small, sw = Math.max(16, Math.round(w / k)), sh = Math.max(9, Math.round(h / k));
+    s.width = sw; s.height = sh; const sg = s.getContext("2d"); sg.imageSmoothingQuality = "high"; sg.drawImage(img, 0, 0, sw, sh);
+    g.imageSmoothingEnabled = true; g.imageSmoothingQuality = "high"; g.drawImage(s, 0, 0, sw, sh, 0, 0, w, h);
+  }
+  function onSeg(res) {
+    const c = fx.canvas, g = fx.ctx; if (!c || !res || !res.segmentationMask) return;
+    const w = c.width, h = c.height;
+    g.save(); g.clearRect(0, 0, w, h);
+    if (fx.canFilter) g.filter = "blur(2px)";               // soften the edge of the cut-out
+    g.drawImage(res.segmentationMask, 0, 0, w, h);
+    if (fx.canFilter) g.filter = "none";
+    g.globalCompositeOperation = "source-in"; g.drawImage(res.image, 0, 0, w, h);
+    g.globalCompositeOperation = "destination-over";
+    if (fx.mode === "blur" || fx.mode === "blur-strong") {
+      const strong = fx.mode === "blur-strong";
+      if (fx.canFilter) { const sc = w / 1280; g.filter = `blur(${(strong ? 20 : 9) * sc}px)`; g.drawImage(res.image, -24, -24, w + 48, h + 48); g.filter = "none"; }
+      else softBlur(g, res.image, w, h, strong ? 22 : 10);
+    } else if (fx.bgSrc) drawCover(g, fx.bgSrc, w, h);
+    else { g.fillStyle = "#101a2e"; g.fillRect(0, 0, w, h); }
+    g.restore();
+    if (fx.applyOnFrame) { fx.applyOnFrame = false; if (fx.mode !== "none") applyCamTrack(fx.track); }
+  }
+  function fxTick() {
+    if (fx.mode === "none" || fx.busy || !fx.seg || !fx.video || fx.video.readyState < 2 || performance.now() < fx.nextAt) return;
+    const v = fx.video;
+    if (v.videoWidth) {
+      const k = Math.min(1, FX_MAX_W / v.videoWidth), cw = Math.round(v.videoWidth * k), ch = Math.round(v.videoHeight * k);
+      if (cw !== fx.canvas.width || ch !== fx.canvas.height) { fx.canvas.width = cw; fx.canvas.height = ch; }
+    }
+    const t0 = performance.now(); fx.busy = true;
+    fx.seg.send({ image: v }).catch(() => {}).then(() => {
+      fx.busy = false;
+      const dt = performance.now() - t0; fx.avg = fx.avg ? fx.avg * 0.8 + dt * 0.2 : dt;
+      fx.nextAt = performance.now() + Math.min(300, dt);            // leave the page time to breathe
+      if (++fx.frames > 8 && fx.avg > 450 && fx.mode !== "none") {
+        toast("This device is too slow for background effects, so they were turned off.", { type: "warn" });
+        setEffect("none");
+      }
+    });
+  }
+  function initFxSource() {
+    if (fx.video) return;
+    const v = document.createElement("video"); v.muted = true; v.playsInline = true; v.autoplay = true;
+    v.style.cssText = "position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none";
+    document.body.append(v); v.srcObject = new MediaStream([rawCam]); v.play().catch(() => {});
+    const c = document.createElement("canvas"), s = rawCam.getSettings ? rawCam.getSettings() : {};
+    const sw = s.width || 1280, sh = s.height || 720, kk = Math.min(1, FX_MAX_W / sw);
+    c.width = Math.round(sw * kk); c.height = Math.round(sh * kk);
+    fx.video = v; fx.canvas = c; fx.ctx = c.getContext("2d"); fx.canFilter = typeof fx.ctx.filter === "string";
+    fx.small = document.createElement("canvas");
+    fx.track = c.captureStream(30).getVideoTracks()[0]; fx.track.enabled = camOn;
+  }
+  function ensureSeg() {
+    if (fx.segP) return fx.segP;
+    fx.segP = (async () => {
+      if (!window.SelfieSegmentation) await loadScript(SEG_BASE + "selfie_segmentation.js");
+      const seg = new window.SelfieSegmentation({ locateFile: (f) => SEG_BASE + f });
+      seg.setOptions({ modelSelection: 1, selfieMode: false });
+      seg.onResults(onSeg);
+      await seg.initialize();
+      fx.seg = seg;
+    })().catch((e) => { fx.segP = null; throw e; });
+    return fx.segP;
+  }
+  function markBg(mode) {
+    document.querySelectorAll("#bgGrid .bgt").forEach((b) => { const on = b.dataset.mode === mode; b.classList.toggle("active", on); b.setAttribute("aria-pressed", String(on)); });
+    $("fxBtn").classList.toggle("on", mode !== "none");
+  }
+  async function setEffect(mode, auto) {
+    if (!hasCam || !rawCam) { if (!auto) toast("No camera was found, so background effects are not available.", { type: "warn" }); return; }
+    const prev = fx.mode;
+    fx.want = mode; markBg(mode);
+    if (mode === "none") {
+      if (fx.stopTick) { fx.stopTick(); fx.stopTick = null; }
+      fx.mode = "none"; saveBg("none"); applyCamTrack(rawCam); return;
+    }
+    $("bgPanel").classList.add("loading"); $("bgState").textContent = fx.seg ? "" : "Loading…";
+    try {
+      initFxSource(); await ensureSeg();
+      if (mode.startsWith("preset:")) fx.bgSrc = makePreset(mode.slice(7), 1280, 720);
+      else if (mode === "custom") { await fx.customReady; if (!fx.customImg) throw new Error("no image"); fx.bgSrc = fx.customImg; }
+      else fx.bgSrc = null;
+    } catch (e) {
+      console.warn("background effect failed", e);
+      $("bgPanel").classList.remove("loading"); $("bgState").textContent = "";
+      if (fx.want === mode) { fx.want = prev; markBg(prev); toast(mode === "custom" ? "Could not use that picture." : "Could not load background effects. Check your internet connection and try again.", { type: "bad" }); }
+      return;
+    }
+    $("bgPanel").classList.remove("loading"); $("bgState").textContent = "";
+    if (fx.want !== mode) return;                              // the person picked something else meanwhile
+    fx.mode = mode; saveBg(mode); fx.avg = 0; fx.frames = 0; fx.nextAt = 0;
+    fx.applyOnFrame = camTrack !== fx.track;                   // show it once the first processed frame is ready
+    if (!fx.stopTick) fx.stopTick = ticker(fxTick, 1000 / 30);
+  }
+  function stopFx() {
+    if (fx.stopTick) { fx.stopTick(); fx.stopTick = null; }
+    fx.mode = "none";
+    try { fx.seg && fx.seg.close(); } catch (e) { /* ignore */ }
+    try { fx.track && fx.track.stop(); } catch (e) { /* ignore */ }
+    if (fx.video) { fx.video.remove(); fx.video = null; }
+  }
+
+  function buildBgPanel() {
+    const grid = $("bgGrid"); grid.innerHTML = "";
+    const base = (mode, label) => { const b = document.createElement("button"); b.type = "button"; b.className = "bgt"; b.dataset.mode = mode; b.title = label; b.setAttribute("aria-label", label); b.setAttribute("aria-pressed", "false"); grid.append(b); return b; };
+    const iconTile = (mode, label, ic) => { const b = base(mode, label); b.append(icon(ic)); const s = document.createElement("span"); s.textContent = label; b.append(s); return b; };
+    const thumb = (mode, label, el) => { const b = base(mode, label); b.append(el); const s = document.createElement("span"); s.className = "cap"; s.textContent = label; b.append(s); return b; };
+    iconTile("none", "None", "ban").onclick = () => setEffect("none");
+    iconTile("blur", "Blur", "blur").onclick = () => setEffect("blur");
+    iconTile("blur-strong", "More blur", "blur").onclick = () => setEffect("blur-strong");
+    PRESETS.forEach((p) => { thumb("preset:" + p.id, p.name, makePreset(p.id, 192, 120)).onclick = () => setEffect("preset:" + p.id); });
+    if (fx.custom) { const im = document.createElement("img"); im.src = fx.custom; im.alt = ""; thumb("custom", "Your picture", im).onclick = () => setEffect("custom"); }
+    iconTile("upload", "Upload", "plus").onclick = () => $("bgFile").click();
+    markBg(fx.mode);
+  }
+  $("bgFile").onchange = async (e) => {
+    const f = e.target.files[0]; e.target.value = ""; if (!f) return;
+    try {
+      const src = URL.createObjectURL(f), img = await loadImg(src); URL.revokeObjectURL(src);
+      const r = Math.min(1, 1280 / (img.naturalWidth || 1280)), c = document.createElement("canvas");
+      c.width = Math.round(img.naturalWidth * r); c.height = Math.round(img.naturalHeight * r); c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      const url = c.toDataURL("image/jpeg", 0.86);
+      fx.custom = url; fx.customImg = await loadImg(url); fx.customReady = Promise.resolve();
+      try { localStorage.setItem(BG_CUSTOM_KEY, url); } catch (err) { toast("Your picture works now, but it is too big to remember for next time.", { ms: 5000 }); }
+      buildBgPanel(); setEffect("custom");
+    } catch (err) { toast("Could not open that picture.", { type: "bad" }); }
+  };
+  $("fxBtn").onclick = () => {
+    const p = $("bgPanel");
+    if (p.classList.contains("show")) { p.classList.remove("show"); return; }
+    buildBgPanel(); placeAbove(p, $("fxBtn"));
+  };
+  function restoreEffect() {
+    let saved = "none"; try { saved = localStorage.getItem(BG_KEY) || "none"; } catch (e) { /* ignore */ }
+    if (saved !== "none" && hasCam) setEffect(saved, true);
+  }
+
   /* ---- teacher (the hub: every student connects to this browser) ---- */
   function startHost() {
     let tries = 0, ready = false;
@@ -189,7 +449,7 @@ window.addEventListener("load", () => {
       peer.on("open", (id) => {
         netBad(false); myId = id; hostId = id; recalc();
         if (ready) return; ready = true;
-        setStatus("Class is live. Click 🔗 Share link to invite students.");
+        setStatus("Class is live. Use Invite to share the link with students.");
         setTimeout(() => { if ($("vstatus").textContent.startsWith("Class is live")) setStatus(""); }, 9000);
       });
       peer.on("connection", onStudentConn);
@@ -234,6 +494,7 @@ window.addEventListener("load", () => {
       ensureTile(id, p.name);
       bcast({ t: "hello", name: teacherName, chat: chatOn, rec: !!recorder }, [id]);
       sendPerm([id]);
+      if (gridStyle !== "dots") bcast({ t: "grid", v: gridStyle }, [id]);
       if ($("showAll").checked) bcast({ t: "mode", m: main.dataset.mode }, [id]);
       sendState(id); refreshPerm();
     });
@@ -266,12 +527,12 @@ window.addEventListener("load", () => {
   function setHandMark(id, on) {
     const t = tiles.get(id); if (!t) return;
     let h = t.d.querySelector(".hand");
-    if (on && !h) { h = document.createElement("div"); h.className = "hand"; h.textContent = "✋"; t.d.append(h); }
+    if (on && !h) { h = document.createElement("div"); h.className = "hand"; h.append(icon("hand")); t.d.append(h); }
     else if (!on && h) h.remove();
   }
   function updateHandBadge() {
     let n = 0; peers.forEach((p) => { if (p.hand) n++; });
-    const b = $("handBadge"); b.textContent = "✋ " + n; b.style.display = n ? "inline" : "none";
+    const b = $("handBadge"); b.textContent = String(n); b.title = n === 1 ? "1 raised hand" : `${n} raised hands`; b.style.display = n ? "inline-grid" : "none";
   }
 
   /* ---- student ---- */
@@ -324,6 +585,7 @@ window.addEventListener("load", () => {
     $("endedMsg").textContent = msg || "The class has ended. Thanks for joining!";
     try { wl && wl.release(); } catch (e) { /* ignore */ }
     try { peer && peer.destroy(); } catch (e) { /* ignore */ }
+    try { stopFx(); } catch (e) { /* ignore */ }
     try { localStream && localStream.getTracks().forEach((t) => t.stop()); screenStream && screenStream.getTracks().forEach((t) => t.stop()); } catch (e) { /* ignore */ }
     $("ended").classList.add("show");
   }
@@ -336,6 +598,14 @@ window.addEventListener("load", () => {
     } else showEnded();
   };
   $("rejoin").addEventListener("click", () => location.reload());
+
+  /* ---- class clock ---- */
+  function startClock() {
+    const t0 = Date.now(), el = $("clock"); el.hidden = false;
+    const p2 = (n) => String(n).padStart(2, "0");
+    const tick = () => { const s = Math.floor((Date.now() - t0) / 1000), h = Math.floor(s / 3600); el.textContent = (h ? h + ":" : "") + p2(Math.floor((s % 3600) / 60)) + ":" + p2(s % 60); };
+    tick(); setInterval(tick, 1000);
+  }
 
   /* ---- join screen ---- */
   let teacherMode = false;
@@ -380,20 +650,22 @@ window.addEventListener("load", () => {
     entering = true; myName = nm; pjMsg("");
     try { localStorage.setItem("meeting-name", nm); } catch (e) { /* ignore */ }
     $("pjStudent").disabled = $("pjTeacher").disabled = true;
-    localStream = await getLocalMedia(); camTrack = localStream.getVideoTracks()[0];
+    localStream = await getLocalMedia(); rawCam = localStream.getVideoTracks()[0]; camTrack = rawCam;
     $("prejoin").style.display = "none";
     if (!asHost) { $("vwrap").classList.add("guest"); $("handBtn").style.display = ""; }
-    keepAwake();
+    $("fxBtn").style.display = hasCam ? "" : "none";
+    keepAwake(); startClock();
     ensureTile("self", myName, true).v.srcObject = localStream;
     if (asHost) {
       isHost = true; teacherName = (who && who.name) || TEACHER_LABEL || myName;
       $("recBtn").style.display = "";
-      if (TEACHERS.some((t) => t.hash === DEFAULT_HASH)) toast("⚠ A teacher is still using the default passcode (change-me-123). Replace its hash in config.js.", { type: "warn", ms: 0 });
+      if (TEACHERS.some((t) => t.hash === DEFAULT_HASH)) banner("A teacher is still using the default passcode (change-me-123). Replace its hash in config.js before real classes.");
       toast(`Logged in as ${teacherName}`, { ms: 3000 });
-      if (ROOM_ID === cleanId(DEFAULT_ROOM)) toast("⚠ Change ROOM and NAMESPACE in config.js so your class link is unique and hard to guess.", { type: "warn", ms: 0 });
+      if (ROOM_ID === cleanId(DEFAULT_ROOM)) banner("Change ROOM and NAMESPACE in config.js so your class link is unique and hard to guess.");
       $("shareBtn").style.display = ""; $("permBtn").style.display = ""; $("showAllWrap").style.display = "";
       recalc(); startHost();
     } else startGuest();
+    restoreEffect();
   }
   $("pjTeacher").onclick = () => { if (!teacherMode) setTeacherMode(true); else enter(true); };
   $("pjStudent").onclick = () => { if (teacherMode) setTeacherMode(false); enter(false); };
@@ -404,11 +676,11 @@ window.addEventListener("load", () => {
   function setMode(m, remote) {
     main.dataset.mode = m;
     if (isHost && !remote && $("showAll").checked) bcast({ t: "mode", m });
-    document.querySelectorAll("#top [data-mode]").forEach((b) => b.classList.toggle("active", b.dataset.mode === m));
+    document.querySelectorAll("#top [data-mode]").forEach((b) => { const on = b.dataset.mode === m; b.classList.toggle("active", on); b.setAttribute("aria-pressed", String(on)); });
     if (m === "board" && !vwrap.dataset.placed) {
       const r = stage.getBoundingClientRect();
-      vwrap.style.setProperty("--fx", Math.max(8, r.width - 320 - 16) + "px");
-      vwrap.style.setProperty("--fy", Math.max(8, r.height - 220 - 16) + "px");
+      vwrap.style.setProperty("--fx", Math.max(8, r.width - 340 - 16) + "px");
+      vwrap.style.setProperty("--fy", $("docbar").offsetHeight + 14 + "px");   // just below the page bar, top right
       vwrap.dataset.placed = "1";
     }
     setTimeout(() => { resizeCanvas(); }, 30);
@@ -423,8 +695,8 @@ window.addEventListener("load", () => {
     s.addEventListener("pointermove", (e) => {
       if (!drag) return;
       const r = stage.getBoundingClientRect();
-      stage.style.setProperty("--vw", clamp(e.clientX - r.left, 200, r.width - 320) + "px");
-      vwrap.style.setProperty("--vw", clamp(e.clientX - r.left, 200, r.width - 320) + "px");
+      stage.style.setProperty("--vw", clamp(e.clientX - r.left, 260, r.width - 360) + "px");
+      vwrap.style.setProperty("--vw", clamp(e.clientX - r.left, 260, r.width - 360) + "px");
     });
     const end = () => { drag = false; };
     s.addEventListener("pointerup", end); s.addEventListener("pointercancel", end);
@@ -436,7 +708,7 @@ window.addEventListener("load", () => {
     let mode = null, off = [0, 0];
     const num = (v, d) => parseFloat(vwrap.style.getPropertyValue(v)) || d;
     bar.addEventListener("pointerdown", (e) => {
-      if (e.target.tagName === "BUTTON") return;
+      if (e.target.closest("button")) return;
       mode = "move"; bar.setPointerCapture(e.pointerId);
       off = [e.clientX - num("--fx", 20), e.clientY - num("--fy", 20)];
     });
@@ -445,13 +717,13 @@ window.addEventListener("load", () => {
       if (!mode) return;
       const r = stage.getBoundingClientRect();
       if (mode === "move") {
-        const w = num("--fw", 320), h = num("--fh", 220);
+        const w = num("--fw", 340), h = num("--fh", 250);
         vwrap.style.setProperty("--fx", clamp(e.clientX - off[0] - 0, 0, r.width - w) + "px");
         vwrap.style.setProperty("--fy", clamp(e.clientY - off[1] - 0, 0, r.height - h) + "px");
       } else {
         const x = num("--fx", 20), y = num("--fy", 20);
-        vwrap.style.setProperty("--fw", clamp(e.clientX - r.left - x, 200, r.width - x) + "px");
-        vwrap.style.setProperty("--fh", clamp(e.clientY - r.top - y, 140, r.height - y) + "px");
+        vwrap.style.setProperty("--fw", clamp(e.clientX - r.left - x, 240, r.width - x) + "px");
+        vwrap.style.setProperty("--fh", clamp(e.clientY - r.top - y, 170, r.height - y) + "px");
       }
     };
     const end = () => { mode = null; };
@@ -468,12 +740,14 @@ window.addEventListener("load", () => {
     const b = document.createElement("div"); b.textContent = text;
     d.append(h, b); chatLog.append(d); chatLog.scrollTop = chatLog.scrollHeight;
   }
-  $("chatBtn").addEventListener("click", () => {
+  function toggleChat() {
     const open = main.classList.toggle("chat-open");
     $("chatBtn").classList.toggle("active", open);
     if (open) { unread = 0; badge.style.display = "none"; $("chatInput").focus(); }
     setTimeout(resizeCanvas, 30);
-  });
+  }
+  $("chatBtn").addEventListener("click", toggleChat);
+  $("chatClose").addEventListener("click", toggleChat);
   function addSys(text) {
     const d = document.createElement("div"); d.className = "msg sys"; d.textContent = text;
     chatLog.append(d); chatLog.scrollTop = chatLog.scrollHeight;
@@ -485,6 +759,7 @@ window.addEventListener("load", () => {
   }
   function setHand(up, fromHost) {
     handUp = up; $("handBtn").classList.toggle("on", up);
+    $("handBtn").setAttribute("aria-pressed", String(up));
     if (!fromHost) bcast({ t: "hand", up });
     else toast("The teacher lowered your hand.");
   }
@@ -503,7 +778,7 @@ window.addEventListener("load", () => {
   });
   function incomingChat(m) {
     addChat(String(m.who || "Guest").slice(0, 40), String(m.text || "").slice(0, 2000), false);
-    if (!main.classList.contains("chat-open")) { unread++; badge.textContent = unread; badge.style.display = "inline"; }
+    if (!main.classList.contains("chat-open")) { unread++; badge.textContent = unread; badge.style.display = "inline-grid"; }
   }
 
   /* =====================  NETWORK (whiteboard + chat over data channels)  ===================== */
@@ -553,7 +828,7 @@ window.addEventListener("load", () => {
           if (!chatOn || p.ct.length >= 6) return; p.ct.push(now);
           m.who = p.name; m.text = String(m.text || "").slice(0, 2000); if (!m.text.trim()) return;
           full = JSON.stringify(m);
-        }
+        } else if (m.t === "laser") { m.u = from; full = JSON.stringify(m); }
       }
       onMsg(m, from);
       if (isHost && (m.t === "chat" || (WRITE.includes(m.t) && authorized(from)))) relayRaw(full, from);
@@ -567,23 +842,36 @@ window.addEventListener("load", () => {
   let pdfDoc = null, pdfId = null, pdfInfo = { n: 1, total: 1 };
   const sentBg = new Set();
   const view = { s: 1, x: 0, y: 0 };
-  const S = { tool: "pen", color: "#111111", size: 4, fill: false };
+  const S = { tool: "pen", color: "#111111", size: 4, fill: false, dash: false };
   let selId = null, dirty = true, spaceDown = false;
+  let gridStyle = "dots";
+  const GRIDS = ["dots", "grid", "lines", "plain"];
+  const LINEISH = ["line", "arrow", "darrow", "numline"];
+  const CLOSED = ["rect", "ellipse", "triangle", "rtri", "diamond", "hexagon", "star"];
+  const SHAPE_TOOLS = ["line", "arrow", "darrow", "rect", "ellipse", "triangle", "rtri", "diamond", "hexagon", "star"];
+  const MATH_TOOLS = ["numline", "axes"];
+  const SHAPES_ALL = [...LINEISH, ...CLOSED, "axes"];
 
   // ---- host / permissions ----
-  const WRITE = ["put", "putn", "pt", "del", "clear", "bg", "page"];
-  let isHost = false, hostId = null, allowAll = false, allowed = new Set(), canDraw = false, rx = 0;
+  const WRITE = ["put", "putn", "pt", "del", "clear", "bg", "page", "laser"];
+  let isHost = false, hostId = null, allowAll = false, allowed = new Set(), canDraw = false;
   const authorized = (id) => id === hostId || allowAll || allowed.has(id);
   function recalc() {
     const was = canDraw;
     canDraw = isHost || allowAll || (!!myId && allowed.has(myId));
     $("viewOnly").style.display = canDraw ? "none" : "block";
-    document.querySelectorAll("#tools [data-tool]").forEach((b) => { b.disabled = !canDraw && b.dataset.tool !== "hand"; });
-    $("clearBtn").disabled = !canDraw; $("pdfBtn").disabled = !canDraw;
+    $("board").classList.toggle("ro", !canDraw);
     if (!canDraw) setTool("hand"); else if (!was) setTool("pen");
     updUI();
   }
   function sendPerm(to) { bcast({ t: "perm", all: allowAll, ids: Array.from(allowed) }, to); }
+
+  // laser pointer trails (short-lived, shown to everyone)
+  const lasers = new Map(), LASER_MS = 700;
+  function addLaser(u, k, x, y) {
+    const L = lasers.get(u) || { k, pts: [] }; L.k = k; L.pts.push({ x, y, t: performance.now() });
+    if (L.pts.length > 48) L.pts.shift(); lasers.set(u, L); dirty = true;
+  }
 
   const cv = $("cv"), ctx = cv.getContext("2d"), wrap = $("cvwrap");
   let dpr = 1;
@@ -629,7 +917,7 @@ window.addEventListener("load", () => {
     if ($("share").checked) bcast({ t: "page", k: key, n: pdfInfo.n, total: pdfInfo.total }, to);
   }
 
-  const HOSTCMD = ["hello", "kick", "end", "mute", "lowerhand", "chatlock", "rec"];
+  const HOSTCMD = ["hello", "kick", "end", "mute", "lowerhand", "chatlock", "rec", "grid"];
   function hostCmd(m) {
     switch (m.t) {
       case "hello": if (m.name) { teacherName = String(m.name).slice(0, 40); ensureTile(HOST_PEER, teacherName); } chatEnabled(m.chat !== false); showRec(!!m.rec); break;
@@ -639,15 +927,15 @@ window.addEventListener("load", () => {
       case "lowerhand": setHand(false, true); break;
       case "chatlock": chatEnabled(m.on !== false); break;
       case "rec": showRec(!!m.on); break;
+      case "grid": setGridStyle(m.v, true); break;
     }
   }
   function onMsg(m, from) {
-    rx++;
     if (m.t === "chat") { incomingChat(m); return; }
     if (m.t === "hand") {
       if (!isHost || !from) return; const p = peers.get(from); if (!p) return;
       p.hand = !!m.up; setHandMark(from, p.hand);
-      if (p.hand) { toast(`✋ ${p.name} raised a hand`); beep(); }
+      if (p.hand) { toast(`${p.name} raised a hand`); beep(); }
       updateHandBadge(); refreshPerm(); return;
     }
     if (HOSTCMD.includes(m.t)) { if (isHost || (from && from !== hostId)) return; hostCmd(m); return; }
@@ -667,6 +955,7 @@ window.addEventListener("load", () => {
         if (m.k !== "board" && !pg(m.k).bg && from) bcast({ t: "needbg", k: m.k }, [from]);
         break;
       case "needbg": { const b = pg(m.k).bg; if (b && from) bcast({ t: "bg", k: m.k, img: b.data, w: b.w, h: b.h }, [from]); break; }
+      case "laser": if (isFinite(m.x) && isFinite(m.y) && m.u !== myId) addLaser(String(m.u || from), m.k, +m.x, +m.y); return;
     }
     dirty = true; updUI();
   }
@@ -677,12 +966,34 @@ window.addEventListener("load", () => {
     let t = l2 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0; t = clamp(t, 0, 1);
     return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
   };
+  function pointInPoly(x, y, P) {
+    let ins = false;
+    for (let i = 0, j = P.length - 1; i < P.length; j = i++) {
+      if ((P[i][1] > y) !== (P[j][1] > y) && x < ((P[j][0] - P[i][0]) * (y - P[i][1])) / (P[j][1] - P[i][1]) + P[i][0]) ins = !ins;
+    }
+    return ins;
+  }
+  function polyPts(o) {
+    const x = o.x, y = o.y, w = o.w, h = o.h;
+    switch (o.type) {
+      case "triangle": return [[x + w / 2, y], [x + w, y + h], [x, y + h]];
+      case "rtri": return [[x, y], [x, y + h], [x + w, y + h]];
+      case "diamond": return [[x + w / 2, y], [x + w, y + h / 2], [x + w / 2, y + h], [x, y + h / 2]];
+      case "hexagon": return [[x + w * 0.25, y], [x + w * 0.75, y], [x + w, y + h / 2], [x + w * 0.75, y + h], [x + w * 0.25, y + h], [x, y + h / 2]];
+      case "star": {
+        const cx = x + w / 2, cy = y + h / 2, rx = w / 2, ry = h / 2, P = [];
+        for (let i = 0; i < 10; i++) { const a = -Math.PI / 2 + (i * Math.PI) / 5, k = i % 2 ? 0.42 : 1; P.push([cx + Math.cos(a) * rx * k, cy + Math.sin(a) * ry * k]); }
+        return P;
+      }
+    }
+    return [];
+  }
   function bbox(o) {
     if (o.pts) {
       const xs = o.pts.map((p) => p[0]), ys = o.pts.map((p) => p[1]), pad = o.sw / 2;
       return [Math.min(...xs) - pad, Math.min(...ys) - pad, Math.max(...xs) + pad, Math.max(...ys) + pad];
     }
-    if (o.a) { const pad = o.sw / 2; return [Math.min(o.a[0], o.b[0]) - pad, Math.min(o.a[1], o.b[1]) - pad, Math.max(o.a[0], o.b[0]) + pad, Math.max(o.a[1], o.b[1]) + pad]; }
+    if (o.a) { const pad = o.type === "numline" ? 26 : o.sw / 2; return [Math.min(o.a[0], o.b[0]) - pad, Math.min(o.a[1], o.b[1]) - pad, Math.max(o.a[0], o.b[0]) + pad, Math.max(o.a[1], o.b[1]) + pad]; }
     if (o.type === "text") {
       ctx.save(); ctx.font = `${o.fs}px sans-serif`;
       const lines = o.t.split("\n"), w = Math.max(...lines.map((l) => ctx.measureText(l).width)); ctx.restore();
@@ -697,7 +1008,7 @@ window.addEventListener("load", () => {
         if (o.pts.length === 1) return Math.hypot(x - o.pts[0][0], y - o.pts[0][1]) <= t;
         for (let i = 0; i < o.pts.length - 1; i++) if (distSeg(x, y, o.pts[i][0], o.pts[i][1], o.pts[i + 1][0], o.pts[i + 1][1]) <= t) return true;
         return false;
-      case "line": case "arrow": return distSeg(x, y, o.a[0], o.a[1], o.b[0], o.b[1]) <= t;
+      case "line": case "arrow": case "darrow": case "numline": return distSeg(x, y, o.a[0], o.a[1], o.b[0], o.b[1]) <= t + (o.type === "numline" ? 6 : 0);
       case "rect": {
         const out = x >= o.x - t && x <= o.x + o.w + t && y >= o.y - t && y <= o.y + o.h + t;
         const inn = x > o.x + t && x < o.x + o.w - t && y > o.y + t && y < o.y + o.h - t;
@@ -707,6 +1018,20 @@ window.addEventListener("load", () => {
         const rx = Math.max(o.w / 2, 1), ry = Math.max(o.h / 2, 1), d = Math.hypot((x - o.x - rx) / rx, (y - o.y - ry) / ry);
         const e = t / Math.min(rx, ry);
         return o.f ? d <= 1 + e : Math.abs(d - 1) <= e;
+      }
+      case "triangle": case "rtri": case "diamond": case "hexagon": case "star": {
+        const P = polyPts(o);
+        if (o.f && pointInPoly(x, y, P)) return true;
+        for (let i = 0; i < P.length; i++) { const a = P[i], b = P[(i + 1) % P.length]; if (distSeg(x, y, a[0], a[1], b[0], b[1]) <= t) return true; }
+        return false;
+      }
+      case "axes": {
+        const cx = o.x + o.w / 2, cy = o.y + o.h / 2;
+        const onV = Math.abs(x - cx) <= t && y >= o.y - t && y <= o.y + o.h + t;
+        const onH = Math.abs(y - cy) <= t && x >= o.x - t && x <= o.x + o.w + t;
+        const out = x >= o.x - t && x <= o.x + o.w + t && y >= o.y - t && y <= o.y + o.h + t;
+        const inn = x > o.x + t && x < o.x + o.w - t && y > o.y + t && y < o.y + o.h - t;
+        return onV || onH || (out && !inn);
       }
       case "text": { const b = bbox(o); return x >= b[0] - tol && x <= b[2] + tol && y >= b[1] - tol && y <= b[3] + tol; }
     }
@@ -722,9 +1047,20 @@ window.addEventListener("load", () => {
   }
 
   /* ---- rendering ---- */
+  function head(x, y, ang, len) {
+    ctx.beginPath();
+    ctx.moveTo(x - len * Math.cos(ang - 0.45), y - len * Math.sin(ang - 0.45)); ctx.lineTo(x, y);
+    ctx.lineTo(x - len * Math.cos(ang + 0.45), y - len * Math.sin(ang + 0.45)); ctx.stroke();
+  }
+  function drawPoly(P, o) {
+    ctx.beginPath(); P.forEach((p, i) => (i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]))); ctx.closePath();
+    if (o.f) { ctx.globalAlpha = 0.3; ctx.fill(); ctx.globalAlpha = 1; }
+    ctx.stroke();
+  }
   function drawObj(o) {
     ctx.save();
     ctx.strokeStyle = o.c; ctx.fillStyle = o.c; ctx.lineWidth = o.sw; ctx.lineCap = "round"; ctx.lineJoin = "round";
+    if (o.d) ctx.setLineDash([o.sw * 2.4, o.sw * 2.4]);
     switch (o.type) {
       case "pen": case "hl": {
         if (o.type === "hl") ctx.globalAlpha = 0.35;
@@ -737,13 +1073,23 @@ window.addEventListener("load", () => {
         }
         break;
       }
-      case "line": case "arrow": {
-        ctx.beginPath(); ctx.moveTo(o.a[0], o.a[1]); ctx.lineTo(o.b[0], o.b[1]); ctx.stroke();
-        if (o.type === "arrow") {
-          const ang = Math.atan2(o.b[1] - o.a[1], o.b[0] - o.a[0]), hl = Math.max(12, o.sw * 4);
-          ctx.beginPath();
-          ctx.moveTo(o.b[0] - hl * Math.cos(ang - 0.45), o.b[1] - hl * Math.sin(ang - 0.45)); ctx.lineTo(o.b[0], o.b[1]);
-          ctx.lineTo(o.b[0] - hl * Math.cos(ang + 0.45), o.b[1] - hl * Math.sin(ang + 0.45)); ctx.stroke();
+      case "line": case "arrow": case "darrow": {
+        ctx.beginPath(); ctx.moveTo(o.a[0], o.a[1]); ctx.lineTo(o.b[0], o.b[1]); ctx.stroke(); ctx.setLineDash([]);
+        const ang = Math.atan2(o.b[1] - o.a[1], o.b[0] - o.a[0]), hl = Math.max(12, o.sw * 4);
+        if (o.type !== "line") head(o.b[0], o.b[1], ang, hl);
+        if (o.type === "darrow") head(o.a[0], o.a[1], ang + Math.PI, hl);
+        break;
+      }
+      case "numline": {
+        const y = o.a[1], xa = Math.min(o.a[0], o.b[0]), xb = Math.max(o.a[0], o.b[0]), st = 40;
+        ctx.beginPath(); ctx.moveTo(xa, y); ctx.lineTo(xb, y); ctx.stroke();
+        head(xb, y, 0, 11); head(xa, y, Math.PI, 11);
+        const n = Math.max(1, Math.floor((xb - xa - 24) / st)), x0 = xa + (xb - xa - n * st) / 2, mid = Math.round(n / 2);
+        ctx.font = `600 ${Math.max(12, 10 + o.sw * 1.5)}px sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "top";
+        for (let i = 0; i <= n; i++) {
+          const x = x0 + i * st;
+          ctx.beginPath(); ctx.moveTo(x, y - 8); ctx.lineTo(x, y + 8); ctx.stroke();
+          ctx.fillText(String(i - mid).replace("-", "\u2212"), x, y + 12);
         }
         break;
       }
@@ -754,6 +1100,35 @@ window.addEventListener("load", () => {
         ctx.beginPath(); ctx.ellipse(o.x + o.w / 2, o.y + o.h / 2, Math.max(o.w / 2, 0.1), Math.max(o.h / 2, 0.1), 0, 0, Math.PI * 2);
         if (o.f) { ctx.globalAlpha = 0.3; ctx.fill(); ctx.globalAlpha = 1; }
         ctx.stroke(); break;
+      case "triangle": case "rtri": case "diamond": case "hexagon": case "star":
+        drawPoly(polyPts(o), o);
+        if (o.type === "rtri" && o.w > 20 && o.h > 20) {
+          const m = Math.min(o.w, o.h, 200) * 0.14; ctx.setLineDash([]);
+          ctx.beginPath(); ctx.moveTo(o.x, o.y + o.h - m); ctx.lineTo(o.x + m, o.y + o.h - m); ctx.lineTo(o.x + m, o.y + o.h); ctx.stroke();
+        }
+        break;
+      case "axes": {
+        const cx = o.x + o.w / 2, cy = o.y + o.h / 2, st = 40;
+        ctx.save(); ctx.globalAlpha = 0.22; ctx.lineWidth = Math.max(1, o.sw / 3); ctx.beginPath();
+        for (let gx = cx - Math.floor((cx - o.x) / st) * st; gx <= o.x + o.w + 0.1; gx += st) { ctx.moveTo(gx, o.y); ctx.lineTo(gx, o.y + o.h); }
+        for (let gy = cy - Math.floor((cy - o.y) / st) * st; gy <= o.y + o.h + 0.1; gy += st) { ctx.moveTo(o.x, gy); ctx.lineTo(o.x + o.w, gy); }
+        ctx.stroke(); ctx.restore();
+        ctx.beginPath(); ctx.moveTo(o.x, cy); ctx.lineTo(o.x + o.w, cy); ctx.moveTo(cx, o.y); ctx.lineTo(cx, o.y + o.h); ctx.stroke();
+        head(o.x + o.w, cy, 0, 11); head(cx, o.y, -Math.PI / 2, 11);
+        if (o.w > 120 && o.h > 120) {
+          ctx.font = "600 12px sans-serif";
+          ctx.textAlign = "center"; ctx.textBaseline = "top";
+          for (let k = 1; cx + k * st < o.x + o.w - 16; k++) ctx.fillText(String(k), cx + k * st, cy + 6);
+          for (let k = 1; cx - k * st > o.x + 8; k++) ctx.fillText("\u2212" + k, cx - k * st, cy + 6);
+          ctx.textAlign = "right"; ctx.textBaseline = "middle";
+          for (let k = 1; cy - k * st > o.y + 16; k++) ctx.fillText(String(k), cx - 7, cy - k * st);
+          for (let k = 1; cy + k * st < o.y + o.h - 8; k++) ctx.fillText("\u2212" + k, cx - 7, cy + k * st);
+          ctx.textBaseline = "top"; ctx.fillText("0", cx - 7, cy + 6);
+          ctx.font = "italic 700 14px serif"; ctx.textAlign = "left"; ctx.textBaseline = "bottom"; ctx.fillText("x", o.x + o.w - 12, cy - 8);
+          ctx.textBaseline = "top"; ctx.fillText("y", cx + 10, o.y + 4);
+        }
+        break;
+      }
       case "text":
         ctx.font = `${o.fs}px sans-serif`; ctx.textBaseline = "top";
         o.t.split("\n").forEach((l, i) => ctx.fillText(l, o.x, o.y + i * o.fs * 1.25)); break;
@@ -761,21 +1136,53 @@ window.addEventListener("load", () => {
     ctx.restore();
   }
   function drawGrid() {
-    const g = 40; if (view.s < 0.3) return;
+    const g = 40; if (gridStyle === "plain" || view.s < 0.3) return;
     const x0 = -view.x / view.s, y0 = -view.y / view.s, x1 = x0 + cv.width / dpr / view.s, y1 = y0 + cv.height / dpr / view.s;
-    const n = ((x1 - x0) / g) * ((y1 - y0) / g); if (n > 25000) return;
-    ctx.fillStyle = "#ced4da"; const r = 1.4 / view.s;
-    for (let x = Math.floor(x0 / g) * g; x < x1; x += g) for (let y = Math.floor(y0 / g) * g; y < y1; y += g) ctx.fillRect(x - r / 2, y - r / 2, r, r);
+    if (gridStyle === "dots") {
+      const n = ((x1 - x0) / g) * ((y1 - y0) / g); if (n > 25000) return;
+      ctx.fillStyle = "#ced4da"; const r = 1.4 / view.s;
+      for (let x = Math.floor(x0 / g) * g; x < x1; x += g) for (let y = Math.floor(y0 / g) * g; y < y1; y += g) ctx.fillRect(x - r / 2, y - r / 2, r, r);
+      return;
+    }
+    ctx.strokeStyle = gridStyle === "grid" ? "#d9e2ee" : "#cddaf2"; ctx.lineWidth = 1 / view.s; ctx.beginPath();
+    for (let y = Math.floor(y0 / g) * g; y < y1; y += g) { ctx.moveTo(x0, y); ctx.lineTo(x1, y); }
+    if (gridStyle === "grid") for (let x = Math.floor(x0 / g) * g; x < x1; x += g) { ctx.moveTo(x, y0); ctx.lineTo(x, y1); }
+    ctx.stroke();
+    if (gridStyle === "lines") { ctx.strokeStyle = "rgba(239,68,68,.35)"; ctx.beginPath(); ctx.moveTo(80, y0); ctx.lineTo(80, y1); ctx.stroke(); }
+  }
+  function drawLasers(now) {
+    lasers.forEach((L) => {
+      if (L.k !== key || !L.pts.length) return;
+      ctx.save(); ctx.lineCap = "round"; ctx.lineJoin = "round";
+      for (let i = 1; i < L.pts.length; i++) {
+        const a = L.pts[i - 1], b = L.pts[i], age = (now - b.t) / LASER_MS; if (age >= 1) continue;
+        ctx.globalAlpha = (1 - age) * 0.85; ctx.strokeStyle = "#ff3b30"; ctx.lineWidth = (2 + 5 * (1 - age)) / view.s;
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      }
+      const h = L.pts[L.pts.length - 1], age = (now - h.t) / LASER_MS;
+      if (age < 1) {
+        const r = 16 / view.s, gr = ctx.createRadialGradient(h.x, h.y, 0, h.x, h.y, r);
+        gr.addColorStop(0, "rgba(255,255,255,1)"); gr.addColorStop(0.25, "rgba(255,59,48,1)"); gr.addColorStop(1, "rgba(255,59,48,0)");
+        ctx.globalAlpha = 1 - age * 0.7; ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(h.x, h.y, r, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.restore();
+    });
   }
   let lastZ = "";
   function render() {
     requestAnimationFrame(render);
     const z = Math.round(view.s * 100) + "%"; if (z !== lastZ) { lastZ = z; $("zLbl").textContent = z; }
+    if (lasers.size) {
+      const now = performance.now();
+      lasers.forEach((L, id) => { L.pts = L.pts.filter((p) => now - p.t < LASER_MS); if (!L.pts.length) lasers.delete(id); });
+      dirty = true;
+    }
     if (!dirty) return; dirty = false;
-    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cv.width, cv.height);
-    ctx.setTransform(dpr * view.s, 0, 0, dpr * view.s, dpr * view.x, dpr * view.y);
     const p = pg(key);
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = p.bg ? "#e8ecf2" : "#fff"; ctx.fillRect(0, 0, cv.width, cv.height);
+    ctx.setTransform(dpr * view.s, 0, 0, dpr * view.s, dpr * view.x, dpr * view.y);
     if (p.bg && p.bg.img.complete && p.bg.img.naturalWidth) {
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, p.bg.w, p.bg.h);
       ctx.drawImage(p.bg.img, 0, 0, p.bg.w, p.bg.h);
       ctx.strokeStyle = "#adb5bd"; ctx.lineWidth = 1 / view.s; ctx.strokeRect(0, 0, p.bg.w, p.bg.h);
     } else if (!p.bg) drawGrid();
@@ -788,6 +1195,7 @@ window.addEventListener("load", () => {
         ctx.strokeRect(b[0] - pad, b[1] - pad, b[2] - b[0] + 2 * pad, b[3] - b[1] + 2 * pad); ctx.restore();
       }
     }
+    drawLasers(performance.now());
   }
   requestAnimationFrame(render);
 
@@ -853,20 +1261,32 @@ window.addEventListener("load", () => {
   $("pNext").onclick = () => gotoPdfPage(pdfInfo.n + 1);
   $("pBoard").onclick = () => { switchPage("board", true); broadcastPage("board"); };
 
+  /* ---- board background menu (dots / squares / lines / plain) ---- */
+  function markGrid() { document.querySelectorAll("#gridMenu [data-grid]").forEach((b) => { const on = b.dataset.grid === gridStyle; b.classList.toggle("on", on); b.setAttribute("aria-checked", String(on)); }); }
+  function setGridStyle(v, remote) {
+    if (!GRIDS.includes(v)) return;
+    gridStyle = v; dirty = true; markGrid();
+    if (isHost && !remote) bcast({ t: "grid", v });
+  }
+  $("gridBtn").onclick = () => { const m = $("gridMenu"); if (m.classList.contains("show")) { m.classList.remove("show"); return; } markGrid(); placeBelow(m, $("gridBtn")); };
+  document.querySelectorAll("#gridMenu [data-grid]").forEach((b) => b.addEventListener("click", () => { setGridStyle(b.dataset.grid); $("gridMenu").classList.remove("show"); }));
+
   /* ---- toolbar wiring ---- */
   const COLORS = ["#111111", "#e03131", "#f08c00", "#2f9e44", "#1971c2", "#9c36b5", "#868e96", "#ffffff"];
   COLORS.forEach((c) => {
-    const b = document.createElement("button"); b.className = "sw"; b.style.background = c; b.dataset.c = c; b.title = c;
+    const b = document.createElement("button"); b.type = "button"; b.className = "sw"; b.style.background = c; b.dataset.c = c; b.title = c; b.setAttribute("aria-label", "Colour " + c);
     b.onclick = () => setColor(c); $("colors").insertBefore(b, $("colorPick"));
   });
+  function updSizePrev() { const i = $("sizePrev"), d = clamp(S.size, 2, 24); i.style.width = i.style.height = d + "px"; i.style.background = S.color; }
   function setColor(c) {
-    S.color = c; $("colorPick").value = c;
+    S.color = c; $("colorPick").value = c; updSizePrev();
     document.querySelectorAll(".sw").forEach((b) => b.classList.toggle("active", b.dataset.c === c));
     if (selId) { const o = find(selId); if (o) { const before = cl(o), after = cl(o); after.c = c; if (after.f) after.f = c; opPut(key, after); pushUndo(key, { undo: () => opPut(key, cl(before)), redo: () => opPut(key, cl(after)) }); } }
   }
   $("colorPick").oninput = (e) => setColor(e.target.value);
-  $("size").oninput = (e) => { S.size = +e.target.value; $("sizeLbl").textContent = S.size; };
-  $("fill").onchange = (e) => { S.fill = e.target.checked; };
+  $("size").oninput = (e) => { S.size = +e.target.value; $("sizeLbl").textContent = S.size; updSizePrev(); };
+  $("fillBtn").onclick = () => { S.fill = !S.fill; $("fillBtn").setAttribute("aria-pressed", String(S.fill)); };
+  $("dashBtn").onclick = () => { S.dash = !S.dash; $("dashBtn").setAttribute("aria-pressed", String(S.dash)); };
   $("undoBtn").onclick = undo; $("redoBtn").onclick = redo;
   $("clearBtn").onclick = () => {
     const k = key, old = cl(pg(k).objs); if (!old.length) return;
@@ -874,20 +1294,55 @@ window.addEventListener("load", () => {
     opClear(k);
     pushUndo(k, { undo: () => old.forEach((o) => opPut(k, cl(o))), redo: () => opClear(k) });
   };
-  $("saveBtn").onclick = () => { dirty = true; const a = document.createElement("a"); a.href = cv.toDataURL("image/png"); a.download = "whiteboard.png"; a.click(); };
+  $("saveBtn").onclick = () => { dirty = true; render1(); const a = document.createElement("a"); a.href = cv.toDataURL("image/png"); a.download = "whiteboard.png"; a.click(); };
+  function render1() { /* the animation loop redraws on the next frame; nothing extra needed */ }
 
+  const lastOf = { shapes: "rect", math: "numline" };
+  function closeFlies() { $("flyShapes").classList.remove("show"); $("flyMath").classList.remove("show"); }
+  function updStyleBar() {
+    const t = S.tool, closed = CLOSED.includes(t), lineish = ["line", "arrow", "darrow"].includes(t);
+    $("styleBar").hidden = t === "hand" || t === "laser";
+    $("colors").hidden = t === "eraser";
+    $("sizeWrap").hidden = t === "select";
+    $("fillBtn").hidden = !closed; $("dashBtn").hidden = !(closed || lineish);
+    document.querySelector('#styleBar [data-for="size"]').hidden = $("sizeWrap").hidden || $("colors").hidden;
+    document.querySelector('#styleBar [data-for="toggles"]').hidden = $("fillBtn").hidden && $("dashBtn").hidden;
+  }
   function setTool(t) {
     commitText(); S.tool = t; if (t !== "select") selId = null;
-    document.querySelectorAll("#tools [data-tool]").forEach((b) => b.classList.toggle("active", b.dataset.tool === t));
+    document.querySelectorAll("[data-tool]").forEach((b) => b.classList.toggle("active", b.dataset.tool === t));
+    const inS = SHAPE_TOOLS.includes(t), inM = MATH_TOOLS.includes(t);
+    if (inS) { lastOf.shapes = t; setIcon($("grpShapes"), t); }
+    if (inM) { lastOf.math = t; setIcon($("grpMath"), t); }
+    $("grpShapes").classList.toggle("active", inS); $("grpMath").classList.toggle("active", inM);
+    closeFlies();
     cv.style.cursor = { select: "default", hand: "grab", text: "text", eraser: "cell" }[t] || "crosshair";
-    dirty = true;
+    updStyleBar(); dirty = true;
   }
-  document.querySelectorAll("#tools [data-tool]").forEach((b) => b.addEventListener("click", () => setTool(b.dataset.tool)));
+  document.querySelectorAll("[data-tool]").forEach((b) => b.addEventListener("click", () => setTool(b.dataset.tool)));
+  [["grpShapes", "flyShapes", "shapes", SHAPE_TOOLS], ["grpMath", "flyMath", "math", MATH_TOOLS]].forEach(([btn, fly, grp, list]) => {
+    $(btn).addEventListener("click", () => {
+      const inGroup = list.includes(S.tool), wasOpen = $(fly).classList.contains("show");
+      if (!inGroup) setTool(lastOf[grp]);
+      if (wasOpen && inGroup) { closeFlies(); return; }
+      const f = $(fly); f.classList.add("show");
+      const br = $(btn).getBoundingClientRect(), mr = $("bmain").getBoundingClientRect();
+      f.style.left = br.right - mr.left + 8 + "px";
+      f.style.top = clamp(br.top - mr.top, 0, Math.max(0, mr.height - f.offsetHeight)) + "px";
+    });
+  });
+  // close popovers when clicking elsewhere
+  document.addEventListener("pointerdown", (e) => {
+    const t = e.target; if (!t || !t.closest) return;
+    if (!t.closest("#bgPanel, #fxBtn")) $("bgPanel").classList.remove("show");
+    if (!t.closest("#gridMenu, #gridBtn")) $("gridMenu").classList.remove("show");
+    if (!t.closest(".fly, .tgrp")) closeFlies();
+  }, true);
 
   function updUI() {
     const p = pg(key);
     $("undoBtn").disabled = !canDraw || !p.undo.length; $("redoBtn").disabled = !canDraw || !p.redo.length;
-    $("pLbl").textContent = key === "board" ? "Board" : `Page ${pdfInfo.n}/${pdfInfo.total}`;
+    $("pLbl").textContent = key === "board" ? "Board" : `Page ${pdfInfo.n} of ${pdfInfo.total}`;
     $("pPrev").disabled = !canDraw || !pdfDoc || pdfInfo.n <= 1;
     $("pNext").disabled = !canDraw || !pdfDoc || pdfInfo.n >= (pdfDoc ? pdfDoc.numPages : 1);
     $("pBoard").disabled = !canDraw || key === "board";
@@ -917,21 +1372,27 @@ window.addEventListener("load", () => {
 
   /* ---- pointer interaction ---- */
   let mode = null, cur = null, curKey = null, start = null, panSt = null, moveSt = null, erased = [];
-  let penBuf = null, lastPut = 0;
+  let penBuf = null, lastPut = 0, lastLaser = 0;
   const scr = (e) => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
   const wor = (s) => [(s[0] - view.x) / view.s, (s[1] - view.y) / view.s];
   function livePut(o, force) { const now = performance.now(); if (force || now - lastPut > 60) { lastPut = now; bcast({ t: "put", k: curKey, o }); } }
   function flushPen() { if (penBuf && penBuf.pts.length) { bcast({ t: "pt", k: penBuf.k, id: penBuf.id, p: penBuf.pts }); penBuf.pts = []; } }
   setInterval(flushPen, 50);
+  function sendLaser(w) {
+    addLaser(myId || "self", key, w[0], w[1]);
+    const now = performance.now(); if (now - lastLaser < 32) return; lastLaser = now;
+    bcast({ t: "laser", k: key, x: Math.round(w[0] * 10) / 10, y: Math.round(w[1] * 10) / 10, u: myId });
+  }
 
   function newShape(t, w) {
-    const base = { id: uid(), type: t, c: S.color, sw: S.size };
-    if (t === "line" || t === "arrow") return Object.assign(base, { a: [w[0], w[1]], b: [w[0], w[1]] });
-    return Object.assign(base, { f: S.fill ? S.color : null, x: w[0], y: w[1], w: 0, h: 0 });
+    const base = { id: uid(), type: t, c: S.color, sw: S.size, d: S.dash && t !== "numline" && t !== "axes" ? 1 : 0 };
+    if (LINEISH.includes(t)) return Object.assign(base, { a: [w[0], w[1]], b: [w[0], w[1]] });
+    return Object.assign(base, { f: CLOSED.includes(t) && S.fill ? S.color : null, x: w[0], y: w[1], w: 0, h: 0 });
   }
   function setGeom(o, st, w, shift) {
     let dx = w[0] - st[0], dy = w[1] - st[1];
     if (o.a) {
+      if (o.type === "numline") dy = 0;
       if (shift) { const ang = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4), l = Math.hypot(dx, dy); dx = l * Math.cos(ang); dy = l * Math.sin(ang); }
       o.a = [st[0], st[1]]; o.b = [st[0] + dx, st[1] + dy];
     } else {
@@ -955,10 +1416,11 @@ window.addEventListener("load", () => {
     if (e.button === 1 || e.button === 2 || S.tool === "hand" || spaceDown) { mode = "pan"; panSt = { s, x: view.x, y: view.y }; cv.style.cursor = "grabbing"; return; }
     if (e.button !== 0 || !canDraw) return;
     curKey = key; const t = S.tool;
+    if (t === "laser") { sendLaser(w); return; }
     if (t === "pen" || t === "hl") {
       cur = { id: uid(), type: t, c: S.color, sw: t === "hl" ? S.size * 4 : S.size, pts: [w] };
       p.objs.push(cur); mode = "draw"; bcast({ t: "put", k: curKey, o: cur }); penBuf = { k: curKey, id: cur.id, pts: [] };
-    } else if (["line", "arrow", "rect", "ellipse"].includes(t)) {
+    } else if (SHAPES_ALL.includes(t)) {
       start = w; cur = newShape(t, w); p.objs.push(cur); mode = "shape";
     } else if (t === "select") {
       const o = findHit(w, 6 / view.s);
@@ -968,6 +1430,7 @@ window.addEventListener("load", () => {
     dirty = true;
   });
   cv.addEventListener("pointermove", (e) => {
+    if (S.tool === "laser" && canDraw && !mode) { sendLaser(wor(scr(e))); return; }
     if (!mode) return;
     const s = scr(e), w = wor(s);
     if (mode === "pan") { view.x = panSt.x + (s[0] - panSt.s[0]); view.y = panSt.y + (s[1] - panSt.s[1]); }
@@ -1002,7 +1465,7 @@ window.addEventListener("load", () => {
   cv.addEventListener("pointercancel", endPointer);
 
   /* ---- keyboard shortcuts ---- */
-  const KEYS = { v: "select", h: "hand", p: "pen", m: "hl", e: "eraser", l: "line", a: "arrow", r: "rect", o: "ellipse", t: "text" };
+  const KEYS = { v: "select", h: "hand", k: "laser", p: "pen", m: "hl", e: "eraser", l: "line", a: "arrow", r: "rect", o: "ellipse", t: "text" };
   window.addEventListener("keydown", (e) => {
     const tag = (e.target.tagName || "").toLowerCase();
     if (tag === "input" || tag === "textarea") return;
@@ -1018,26 +1481,29 @@ window.addEventListener("load", () => {
   });
   window.addEventListener("keyup", (e) => { if (e.code === "Space") spaceDown = false; });
 
-  /* ---- host login + permission panel ---- */
+  /* ---- host login + people panel ---- */
+  const avColor = (name) => { let h = 0; for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) % 360; return `hsl(${h} 48% 40%)`; };
+  const initials = (name) => String(name || "?").trim().split(/\s+/).slice(0, 2).map((w) => (w[0] || "").toUpperCase()).join("") || "?";
   function renderPerm() {
     const box = $("permList"); box.innerHTML = "";
     $("allowAll").checked = allowAll; $("lockClass").checked = locked; $("chatOnChk").checked = chatOn;
     const list = []; peers.forEach((p, id) => { if (p.conn && p.conn.open) list.push({ id, p }); });
     $("pCount").textContent = `${list.length} student${list.length === 1 ? "" : "s"} online`;
-    if (!list.length) { const e = document.createElement("div"); e.className = "muted2"; e.style.padding = "12px 0"; e.textContent = "No students have joined yet."; box.append(e); return; }
+    if (!list.length) { const e = document.createElement("div"); e.className = "muted2"; e.style.padding = "14px 0"; e.textContent = "No students have joined yet. Use Invite to share the class link."; box.append(e); return; }
     list.forEach(({ id, p }) => {
       const row = document.createElement("div"); row.className = "prow";
+      const av = document.createElement("span"); av.className = "av"; av.textContent = initials(p.name); av.style.background = avColor(p.name); row.append(av);
       const pn = document.createElement("span"); pn.className = "pn"; pn.textContent = p.name || "Student";
       if (p.att) { const sm = document.createElement("small"); sm.textContent = "Joined " + p.att.joined.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); pn.append(sm); }
       row.append(pn);
-      if (p.hand) { const h = document.createElement("button"); h.type = "button"; h.className = "hd"; h.textContent = "✋ Lower"; h.onclick = () => lowerHand(id); row.append(h); }
-      const l = document.createElement("label"), c = document.createElement("input");
-      c.type = "checkbox"; c.checked = allowAll || allowed.has(id); c.disabled = allowAll;
-      c.onchange = () => { if (c.checked) allowed.add(id); else allowed.delete(id); sendPerm(); };
-      l.title = "Allow this student to draw"; l.append(c, "✏️"); row.append(l);
-      const m = document.createElement("button"); m.type = "button"; m.textContent = "🔇"; m.title = "Mute this student's microphone"; m.onclick = () => { bcast({ t: "mute" }, [id]); toast(`Muted ${p.name}`, { ms: 2000 }); };
-      const x = document.createElement("button"); x.type = "button"; x.className = "danger"; x.textContent = "✕"; x.title = "Remove from class"; x.onclick = () => removeStudent(id, p.name);
-      row.append(m, x); box.append(row);
+      const btn = (cls, ic, title, fn) => { const b = document.createElement("button"); b.type = "button"; b.className = "ib " + cls; b.title = title; b.setAttribute("aria-label", title); b.append(icon(ic)); b.onclick = fn; return b; };
+      if (p.hand) { const h = btn("hd", "hand", "Lower this student's hand", () => lowerHand(id)); h.append(document.createTextNode("Lower")); row.append(h); }
+      const canPen = allowAll || allowed.has(id);
+      const d = btn(canPen ? "on" : "", "pen", allowAll ? "Everyone can draw" : "Allow this student to draw", () => { if (allowed.has(id)) allowed.delete(id); else allowed.add(id); sendPerm(); renderPerm(); });
+      d.disabled = allowAll; d.setAttribute("aria-pressed", String(canPen)); row.append(d);
+      row.append(btn("", "mic-off", "Mute this student's microphone", () => { bcast({ t: "mute" }, [id]); toast(`Muted ${p.name}`, { ms: 2000 }); }));
+      row.append(btn("danger", "x", "Remove from class", () => removeStudent(id, p.name)));
+      box.append(row);
     });
   }
   function removeStudent(id, name) {
@@ -1046,7 +1512,7 @@ window.addEventListener("load", () => {
     setTimeout(() => dropStudent(id), 500);
   }
   $("muteAll").onclick = () => { bcast({ t: "mute" }); toast("Muted all students.", { ms: 2500 }); };
-  $("lockClass").onchange = (e) => { locked = e.target.checked; if (!locked) turnedAway.clear(); toast(locked ? "🔒 Class locked. No new students can join." : "🔓 Class unlocked.", { ms: 2500 }); };
+  $("lockClass").onchange = (e) => { locked = e.target.checked; if (!locked) turnedAway.clear(); toast(locked ? "Class locked. No new students can join." : "Class unlocked.", { ms: 2500 }); };
   $("chatOnChk").onchange = (e) => { chatEnabled(e.target.checked); bcast({ t: "chatlock", on: chatOn }); toast(chatOn ? "Student chat is on." : "Student chat is off.", { ms: 2500 }); };
   $("attDl").onclick = () => { if (!attendance.length) { toast("No attendance yet."); return; } downloadAttendance(); };
   const csvCell = (v) => { let t = String(v == null ? "" : v); if (/^[=+\-@\t\r]/.test(t)) t = "'" + t; return '"' + t.replace(/"/g, '""') + '"'; };
@@ -1080,7 +1546,7 @@ window.addEventListener("load", () => {
         const blob = new Blob(chunks, { type: recorder.mimeType || "video/webm" });
         try { recDisp && recDisp.getTracks().forEach((t) => t.stop()); recCtx && recCtx.close(); } catch (e) { /* ignore */ }
         clearInterval(recTimer); recorder = null; recDisp = null; recCtx = null;
-        $("recBtn").classList.remove("rec"); $("recBtn").querySelector(".lbl").textContent = "Record"; $("recBtn").firstChild.textContent = "⏺ ";
+        $("recBtn").classList.remove("rec"); $("recBtn").querySelector(".lbl").textContent = "Record"; setIcon($("recBtn"), "rec");
         showRec(false); if (!ended) bcast({ t: "rec", on: false });
         if (blob.size) { saveBlob(blob, `class-${ROOM_ID}-${teacherName.replace(/[^A-Za-z0-9]+/g, "").slice(0, 20) || "teacher"}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-")}.${ext}`); toast("Recording saved to your Downloads folder.", { ms: 6000 }); }
       };
@@ -1088,7 +1554,7 @@ window.addEventListener("load", () => {
       recorder.start(10000);
       const t0 = Date.now();
       const tick = () => { const sec = Math.floor((Date.now() - t0) / 1000); $("recBtn").querySelector(".lbl").textContent = `Stop ${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`; };
-      $("recBtn").classList.add("rec"); $("recBtn").firstChild.textContent = "⏹ "; tick(); recTimer = setInterval(tick, 1000);
+      $("recBtn").classList.add("rec"); setIcon($("recBtn"), "stop"); tick(); recTimer = setInterval(tick, 1000);
       showRec(true); bcast({ t: "rec", on: true });
     } catch (e) {
       console.warn(e); toast("Could not start recording.", { type: "bad" });
@@ -1109,10 +1575,11 @@ window.addEventListener("load", () => {
     netBad(false); toast("Back online.", { ms: 2500 });
     try { if (peer && peer.disconnected && !peer.destroyed) peer.reconnect(); } catch (e) { /* ignore */ }
   });
-  function refreshPerm() { if ($("permPanel").classList.contains("show")) renderPerm(); }
+  function refreshPerm() { $("pBadge").textContent = String(targets().length); if ($("permPanel").classList.contains("show")) renderPerm(); }
   $("allowAll").onchange = (e) => { allowAll = e.target.checked; sendPerm(); renderPerm(); };
-  $("permBtn").onclick = () => { $("sharePanel").classList.remove("show"); const pn = $("permPanel"); pn.classList.toggle("show"); if (pn.classList.contains("show")) renderPerm(); };
+  $("permBtn").onclick = () => { $("sharePanel").classList.remove("show"); const pn = $("permPanel"); pn.classList.toggle("show"); if (pn.classList.contains("show")) renderPerm(); syncPanelBtns(); };
   $("showAll").onchange = (e) => { if (e.target.checked) bcast({ t: "mode", m: main.dataset.mode }); };
+
   /* ---- share class link (teacher only) ---- */
   const SHARE_KEY = "meeting-share-base";
   const isLocalUrl = (u) => /^(file:|https?:\/\/(localhost|127\.|0\.0\.0\.0|\[::1\]|192\.168\.|10\.))/i.test((u || "").trim());
@@ -1132,7 +1599,7 @@ window.addEventListener("load", () => {
   }
   $("shareBtn").onclick = () => {
     $("permPanel").classList.remove("show");
-    const pn = $("sharePanel"); pn.classList.toggle("show");
+    const pn = $("sharePanel"); pn.classList.toggle("show"); syncPanelBtns();
     if (!pn.classList.contains("show")) return;
     $("shareNative").style.display = navigator.share ? "" : "none";
     fillShareUrl();
@@ -1144,11 +1611,11 @@ window.addEventListener("load", () => {
     if (!url) { shareMsg("Enter a link first"); return; }
     try {
       await navigator.clipboard.writeText(url);
-      shareMsg("Link copied ✔");
+      shareMsg("Link copied");
     } catch (err) {
       $("shareUrl").select();
       let ok = false; try { ok = document.execCommand("copy"); } catch (e2) { /* ignore */ }
-      shareMsg(ok ? "Link copied ✔" : "Press Ctrl+C to copy the selected link");
+      shareMsg(ok ? "Link copied" : "Press Ctrl+C to copy the selected link");
     }
   };
   $("shareNative").onclick = () => {
@@ -1158,9 +1625,7 @@ window.addEventListener("load", () => {
   $("shareWa").onclick = () => window.open("https://wa.me/?text=" + encodeURIComponent(shareText()), "_blank", "noopener");
   $("shareMail").onclick = () => { location.href = "mailto:?subject=" + encodeURIComponent("Class invitation") + "&body=" + encodeURIComponent(shareText()); };
 
-  setInterval(() => { $("syncLbl").textContent = `Sync: ${targets().length} other(s) · ${rx} received`; }, 1000);
-
   /* ---- init ---- */
-  setColor("#111111"); setTool("pen"); setMode("video"); resizeCanvas(); recalc(); updUI();
+  setColor("#111111"); setTool("pen"); setMode("video"); resizeCanvas(); recalc(); updUI(); markGrid(); updSizePrev();
 });
 })();
