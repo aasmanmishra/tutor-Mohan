@@ -4,6 +4,7 @@ const CFG = window.MEETING_CONFIG || {};
 const ROOM = CFG.ROOM || "class";
 const NAMESPACE = CFG.NAMESPACE || "meetingapp";
 const APP_NAME = CFG.APP_NAME || "My Meeting App";
+const GATE_URL = CFG.GATE_URL || "";
 // Teachers: each has their own passcode hash (and optionally the rooms they may host).
 // The old single HOST_PASSCODE_HASH setting still works as an unnamed teacher.
 const TEACHERS = (Array.isArray(CFG.TEACHERS) ? CFG.TEACHERS : [])
@@ -65,6 +66,9 @@ window.addEventListener("load", () => {
   const ROOM_ID = cleanId(params.get("room")) || cleanId(ROOM) || "class";
   const HOST_PEER = `${NAMESPACE}-${ROOM_ID}-host`;
   const ROLE_PARAM = params.get("role");
+  const TICKET_UID = params.get("uid") || "";
+  const TICKET_EXP = params.get("exp") || "";
+  const TICKET_SIG = params.get("sig") || "";
   const PEER_OPTS = { debug: 1, config: { iceServers: [{ urls: "stun:stun.l.google.com:19302" }, { urls: "stun:global.stun.twilio.com:3478" }, ...EXTRA_ICE_SERVERS] } };
   let myId = null, myName = "Guest", peer = null, localStream = null, rawCam = null, camTrack = null, screenStream = null;
   let hasCam = false, camOn = true;
@@ -474,6 +478,29 @@ window.addEventListener("load", () => {
     let i = 2; while (used.has(`${n} (${i})`.toLowerCase())) i++;
     return `${n} (${i})`;
   }
+  /* ---- ticket check: is this incoming connection still allowed to join? ----
+     Every join link handed out by the site carries a short-lived, signed
+     ticket (uid/exp/sig). This asks the Apps Script gate to verify it, on
+     every single connection attempt, instead of trusting the link forever
+     once it's been shared. One fetch per student, cached, and shared
+     between their data connection and their video call. */
+  const verifyState = new Map();   // peer id -> Promise<boolean>
+  function verifyGuestTicket(meta) {
+    if (!GATE_URL) return Promise.resolve(true);   // not configured: skip the check
+    const uid = meta && meta.uid, exp = meta && meta.exp, sig = meta && meta.sig;
+    if (!uid || !exp || !sig) return Promise.resolve(false);
+    const qs = new URLSearchParams({ action: "verifyTicket", id: ROOM_ID, uid: uid, exp: exp, sig: sig });
+    return fetch(GATE_URL + "?" + qs.toString())
+      .then((res) => res.json())
+      .then((data) => !!(data && data.ok && data.valid))
+      .catch((e) => { console.warn("ticket check failed", e); return false; });
+  }
+  function ensureVerified(peerLike) {
+    const id = peerLike.peer;
+    if (!verifyState.has(id)) verifyState.set(id, verifyGuestTicket(peerLike.metadata));
+    return verifyState.get(id);
+  }
+
   function onStudentConn(conn) {
     const id = conn.peer;
     const wasKnown = attendance.some((a) => a.id === id);
@@ -486,17 +513,25 @@ window.addEventListener("load", () => {
       return;
     }
     conn.on("open", () => {
-      const p = peers.get(id) || {}; p.conn = conn;
-      p.name = uniqueName(String((conn.metadata && conn.metadata.name) || "Student").trim().slice(0, 40) || "Student", id); peers.set(id, p);
-      let a = attendance.find((x) => x.id === id);
-      if (a) a.left = null; else { a = { id, name: p.name, joined: new Date(), left: null }; attendance.push(a); addSys(`${p.name} joined`); }
-      p.att = a;
-      ensureTile(id, p.name);
-      bcast({ t: "hello", name: teacherName, chat: chatOn, rec: !!recorder }, [id]);
-      sendPerm([id]);
-      if (gridStyle !== "dots") bcast({ t: "grid", v: gridStyle }, [id]);
-      if ($("showAll").checked) bcast({ t: "mode", m: main.dataset.mode }, [id]);
-      sendState(id); refreshPerm();
+      ensureVerified(conn).then((ok) => {
+        if (!ok) {
+          rejected.add(id);
+          try { conn.send("wb:" + JSON.stringify({ t: "kick", reason: "invalid-link" })); } catch (e) { /* ignore */ }
+          setTimeout(() => { try { conn.close(); } catch (e) { /* ignore */ } }, 600);
+          return;
+        }
+        const p = peers.get(id) || {}; p.conn = conn;
+        p.name = uniqueName(String((conn.metadata && conn.metadata.name) || "Student").trim().slice(0, 40) || "Student", id); peers.set(id, p);
+        let a = attendance.find((x) => x.id === id);
+        if (a) a.left = null; else { a = { id, name: p.name, joined: new Date(), left: null }; attendance.push(a); addSys(`${p.name} joined`); }
+        p.att = a;
+        ensureTile(id, p.name);
+        bcast({ t: "hello", name: teacherName, chat: chatOn, rec: !!recorder }, [id]);
+        sendPerm([id]);
+        if (gridStyle !== "dots") bcast({ t: "grid", v: gridStyle }, [id]);
+        if ($("showAll").checked) bcast({ t: "mode", m: main.dataset.mode }, [id]);
+        sendState(id); refreshPerm();
+      });
     });
     conn.on("data", (d) => onData(id, d));
     const gone = () => { const p = peers.get(id); if (p && p.conn === conn) dropStudent(id); };
@@ -505,11 +540,15 @@ window.addEventListener("load", () => {
   function onStudentCall(call) {
     const id = call.peer;
     if (blocked(id)) { try { call.close(); } catch (e) { /* ignore */ } return; }
-    const p = peers.get(id) || {}; p.call = call; peers.set(id, p);
-    calls.add(call);
-    call.answer(outStream());
-    call.on("stream", (st) => { const q = peers.get(id) || {}; ensureTile(id, q.name || (call.metadata && call.metadata.name) || "Student").v.srcObject = st; });
-    call.on("close", () => calls.delete(call)); call.on("error", () => calls.delete(call));
+    ensureVerified(call).then((ok) => {
+      if (!ok) { rejected.add(id); try { call.close(); } catch (e) { /* ignore */ } return; }
+      if (blocked(id)) { try { call.close(); } catch (e) { /* ignore */ } return; }
+      const p = peers.get(id) || {}; p.call = call; peers.set(id, p);
+      calls.add(call);
+      call.answer(outStream());
+      call.on("stream", (st) => { const q = peers.get(id) || {}; ensureTile(id, q.name || (call.metadata && call.metadata.name) || "Student").v.srcObject = st; });
+      call.on("close", () => calls.delete(call)); call.on("error", () => calls.delete(call));
+    });
   }
   function dropStudent(id) {
     const p = peers.get(id); if (!p) return;
@@ -544,7 +583,7 @@ window.addEventListener("load", () => {
     const linked = (conn) => {
       hostId = HOST_PEER; peers.set(HOST_PEER, { conn, name: teacherName }); setStatus(""); recalc();
       if (handUp) setTimeout(() => bcast({ t: "hand", up: true }), 600);
-      const call = peer.call(HOST_PEER, outStream(), { metadata: { name: myName } });
+      const call = peer.call(HOST_PEER, outStream(), { metadata: { name: myName, uid: TICKET_UID, exp: TICKET_EXP, sig: TICKET_SIG } });
       peers.get(HOST_PEER).call = call; calls.add(call);
       call.on("stream", (st) => { ensureTile(HOST_PEER, teacherName).v.srcObject = st; });
       call.on("close", () => calls.delete(call));
@@ -559,7 +598,7 @@ window.addEventListener("load", () => {
       if (leaving || !peer || peer.destroyed) return;
       if (peer.disconnected) { try { peer.reconnect(); } catch (e) { /* ignore */ } }
       setStatus("Connecting to the teacher…");
-      const conn = peer.connect(HOST_PEER, { reliable: true, metadata: { name: myName } });
+      const conn = peer.connect(HOST_PEER, { reliable: true, metadata: { name: myName, uid: TICKET_UID, exp: TICKET_EXP, sig: TICKET_SIG } });
       let opened = false;
       conn.on("open", () => { opened = true; clearTimeout(timer); linked(conn); });
       conn.on("data", (d) => onData(HOST_PEER, d));
