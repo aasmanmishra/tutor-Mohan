@@ -683,6 +683,18 @@ window.addEventListener("load", () => {
       if (who.rooms && !who.rooms.some((r) => cleanId(r).toLowerCase() === ROOM_ID.toLowerCase())) {
         pjMsg("This passcode is not allowed to host this class room."); return;
       }
+      // A correct passcode alone is no longer enough to become host. The
+      // link must also carry a valid, currently-active ticket for this
+      // exact class - the same ticket the site hands to students. The
+      // gate (Code.gs) only ever issues one to an admin at any time, or to
+      // a teacher inside that class's join window (10 min before to
+      // 30 min after) - so a teacher can only host during that window,
+      // while an admin can always fetch a fresh valid one from the site.
+      const ticketOk = await verifyGuestTicket({ uid: TICKET_UID, exp: TICKET_EXP, sig: TICKET_SIG });
+      if (!ticketOk) {
+        pjMsg("This link isn't valid to host right now. Open the class from My Classes on the site to get a fresh link.");
+        return;
+      }
     }
     const nm = (asHost && who && who.name) || $("pjUser").value.trim() || (asHost ? "Teacher" : "");
     if (!nm) { pjMsg("Please enter your name"); return; }
