@@ -18,6 +18,11 @@ window.MEETING_CONFIG = {
   ROOM: "SampleAppWorseParkingsCutOpenly", // default room. Make it long and random!
   NAMESPACE: "tutormohan",                 // unique to you (letters/numbers/dashes)
 
+  // Same Apps Script gate URL as the Blogger theme. Lets this app verify a
+  // join link is still valid before letting someone in, instead of
+  // trusting it forever once it's been handed out.
+  GATE_URL: "https://script.google.com/macros/s/AKfycbxGC6d2Flu0-NE6FEYG-62sN0oA1TSAROXDrujISesGAtUnfEEhdto80Ah58E8Qy78dZQ/exec",
+
   // TEACHERS: one entry per teacher. Each teacher has their OWN passcode.
   //   name  = shown to students and written in attendance/recording file names
   //   hash  = SHA-256 of that teacher's passcode. Make it with make-passcode-hash.html
