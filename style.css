@@ -103,6 +103,10 @@ body.student .seg, body.student #vSplit { display: none; }
 .tile.self video { transform: scaleX(-1); }
 .tile.self.screen video { transform: none; }
 .tile .nm { position: absolute; left: 10px; bottom: 10px; max-width: calc(100% - 20px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: rgba(6,10,20,.72); backdrop-filter: blur(6px); color: #fff; font-size: 12.5px; font-weight: 600; padding: 4px 11px; border-radius: 999px; }
+/* while someone shares their screen, only the shared screen is shown, full size */
+#vgrid.sharing { grid-template-columns: 1fr; grid-auto-rows: 1fr; padding: 0; gap: 0; align-content: stretch; }
+#vgrid.sharing .tile { display: none; }
+#vgrid.sharing .tile.present { display: block; border-radius: 0; border: 0; aspect-ratio: auto; }
 .tile .hand { position: absolute; top: 10px; right: 10px; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: #ffd43b; color: #1a1300; box-shadow: 0 4px 14px rgba(0,0,0,.5); animation: wave 1s ease-in-out infinite alternate; }
 .tile .hand .ic { width: 20px; height: 20px; }
 @keyframes wave { from { transform: rotate(-12deg); } to { transform: rotate(12deg); } }
