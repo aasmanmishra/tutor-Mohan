@@ -815,6 +815,15 @@ window.addEventListener("load", () => {
   $("pjTeacher").onclick = () => { if (!teacherMode) setTeacherMode(true); else enter(true); };
   $("pjStudent").onclick = () => { if (teacherMode) setTeacherMode(false); enter(false); };
   [$("pjUser"), $("pjPass")].forEach((el) => el.addEventListener("keydown", (e) => { if (e.key === "Enter") (teacherMode ? $("pjTeacher") : $("pjStudent")).click(); }));
+  // Show / Hide the teacher passcode
+  $("pjShowPass").onclick = () => {
+    const show = $("pjPass").type === "password";
+    $("pjPass").type = show ? "text" : "password";
+    $("pjShowPass").textContent = show ? "Hide" : "Show";
+    $("pjShowPass").setAttribute("aria-pressed", String(show));
+    $("pjShowPass").setAttribute("aria-label", show ? "Hide passcode" : "Show passcode");
+    $("pjPass").focus();
+  };
 
   /* =====================  LAYOUT  ===================== */
   const main = $("main"), stage = $("stage"), vwrap = $("vwrap");
