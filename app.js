@@ -178,7 +178,7 @@ window.addEventListener("load", () => {
     return t;
   }
   function dropTile(id) { const t = tiles.get(id); if (t) { t.d.remove(); tiles.delete(id); updGrid(); } }
-  function updGrid() { $("vgrid").classList.toggle("multi", tiles.size - (tiles.has("self") && !isHost ? 1 : 0) > 1); }   // several people: neat 16:9 tiles (a student's hidden self tile is not counted)
+  function updGrid() { $("vgrid").classList.toggle("multi", tiles.size > 1); }   // several people: neat 16:9 tiles, same size for everyone
 
   /* ---- camera / microphone ---- */
   function blackTrack() { const c = document.createElement("canvas"); c.width = c.height = 16; c.getContext("2d").fillRect(0, 0, 16, 16); return c.captureStream(5).getVideoTracks()[0]; }
@@ -663,11 +663,21 @@ window.addEventListener("load", () => {
   }
   if (ROLE_PARAM === "student") $("pjTeacher").style.display = "none";
   if (ROLE_PARAM === "teacher") { $("pjStudent").style.display = "none"; setTeacherMode(true); }
+  if (GATE_URL) {
+    // a bare link (no ticket) cannot be used at all; a link with a ticket is checked with the gate
+    if (!TICKET_SIG) { pjMsg("Open this class from My Classes on the website to join."); $("pjStudent").disabled = $("pjTeacher").disabled = true; }
+    else verifyGuestTicket({ uid: TICKET_UID, exp: TICKET_EXP, sig: TICKET_SIG }).then((ok) => { if (!ok) pjMsg("This class link is not active right now. Open the class from My Classes on the website during class time."); });
+  }
   let fails = 0, lockUntil = 0;
   async function enter(asHost) {
     if (entering) return;
     let who = null;   // the teacher whose passcode matched
     if (typeof Peer === "undefined") { pjMsg("Could not load the connection library. Check your internet and reload."); return; }
+    if (!asHost) {
+      // students need a valid, currently-active ticket before the camera starts or anything connects
+      const okTicket = await verifyGuestTicket({ uid: TICKET_UID, exp: TICKET_EXP, sig: TICKET_SIG });
+      if (!okTicket) { pjMsg("This class link is not active right now. Open the class from My Classes on the website during class time."); return; }
+    }
     if (asHost) {
       const wait = Math.ceil((lockUntil - Date.now()) / 1000);
       if (wait > 0) { pjMsg(`Too many wrong attempts. Try again in ${wait}s.`); return; }
@@ -705,7 +715,7 @@ window.addEventListener("load", () => {
     $("pjStudent").disabled = $("pjTeacher").disabled = true;
     localStream = await getLocalMedia(); rawCam = localStream.getVideoTracks()[0]; camTrack = rawCam;
     $("prejoin").style.display = "none";
-    if (!asHost) { $("vwrap").classList.add("guest"); $("handBtn").style.display = ""; }
+    if (!asHost) { $("vwrap").classList.add("guest"); document.body.classList.add("student"); $("handBtn").style.display = ""; }
     $("fxBtn").style.display = hasCam ? "" : "none";
     keepAwake(); startClock();
     ensureTile("self", myName, true).v.srcObject = localStream;
@@ -715,7 +725,7 @@ window.addEventListener("load", () => {
       if (TEACHERS.some((t) => t.hash === DEFAULT_HASH)) banner("A teacher is still using the default passcode (change-me-123). Replace its hash in config.js before real classes.");
       toast(`Logged in as ${teacherName}`, { ms: 3000 });
       if (ROOM_ID === cleanId(DEFAULT_ROOM)) banner("Change ROOM and NAMESPACE in config.js so your class link is unique and hard to guess.");
-      $("shareBtn").style.display = ""; $("permBtn").style.display = ""; $("showAllWrap").style.display = "";
+      $("shareBtn").style.display = GATE_URL ? "none" : ""; $("permBtn").style.display = ""; $("showAllWrap").style.display = "";
       recalc(); startHost();
     } else startGuest();
     restoreEffect();
@@ -735,6 +745,7 @@ window.addEventListener("load", () => {
     else { const m = modeBeforeScreen || "video"; modeBeforeScreen = null; setMode(m, remote); }
   }
   function setMode(m, remote) {
+    if (!isHost && !remote) return;   // students cannot change the layout; it follows the teacher
     if (screenOn && m !== "video") {
       if (!remote) toast(isHost ? "Stop screen sharing to use the whiteboard." : "The teacher is sharing their screen.", { ms: 2500 });
       return;
@@ -1727,6 +1738,6 @@ window.addEventListener("load", () => {
   $("shareMail").onclick = () => { location.href = "mailto:?subject=" + encodeURIComponent("Class invitation") + "&body=" + encodeURIComponent(shareText()); };
 
   /* ---- init ---- */
-  setColor("#111111"); setTool("pen"); setMode("video"); resizeCanvas(); recalc(); updUI(); markGrid(); updSizePrev();
+  setColor("#111111"); setTool("pen"); setMode("video", true); resizeCanvas(); recalc(); updUI(); markGrid(); updSizePrev();
 });
 })();
