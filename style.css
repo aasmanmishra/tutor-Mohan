@@ -96,8 +96,8 @@ button:focus-visible, input:focus-visible, .switch input:focus-visible + span { 
 #vgrid.multi { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); grid-auto-rows: auto; }
 #vgrid.multi .tile { aspect-ratio: 16 / 9; }
 #main[data-mode="board"] #vgrid.multi { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
-#vwrap.guest #vgrid.multi { grid-auto-rows: 1fr; align-content: stretch; }
-#vwrap.guest #vgrid.multi .tile { aspect-ratio: auto; }
+/* students cannot switch layouts: the teacher controls it */
+body.student .seg, body.student #vSplit { display: none; }
 .tile { position: relative; background: #0b1424; border-radius: 14px; overflow: hidden; min-height: 0; border: 1px solid rgba(255,255,255,.07); }
 .tile video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
 .tile.self video { transform: scaleX(-1); }
@@ -106,10 +106,6 @@ button:focus-visible, input:focus-visible, .switch input:focus-visible + span { 
 .tile .hand { position: absolute; top: 10px; right: 10px; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%; background: #ffd43b; color: #1a1300; box-shadow: 0 4px 14px rgba(0,0,0,.5); animation: wave 1s ease-in-out infinite alternate; }
 .tile .hand .ic { width: 20px; height: 20px; }
 @keyframes wave { from { transform: rotate(-12deg); } to { transform: rotate(12deg); } }
-#vwrap.guest #vgrid { grid-template-columns: 1fr; grid-auto-rows: 1fr; padding: 0; gap: 0; }
-#vwrap.guest .tile { border-radius: 0; border: 0; }
-/* a student does not see their own camera picture (it is still sent to the teacher) */
-#vwrap.guest .tile.self { display: none; }
 #vstatus { display: none; position: absolute; top: 14px; left: 50%; transform: translateX(-50%); background: rgba(15,26,49,.96); border: 1px solid var(--line2); color: #fff; padding: 8px 18px; border-radius: 999px; font-size: 13px; z-index: 6; text-align: center; max-width: 90%; box-shadow: 0 8px 24px rgba(0,0,0,.4); }
 
 /* ---------- call controls (dock) ---------- */
