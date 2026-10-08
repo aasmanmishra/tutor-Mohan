@@ -76,6 +76,8 @@ window.addEventListener("load", () => {
   const peers = new Map();   // peer id -> { name, conn, call }   (teacher: every student; student: only the teacher)
   const calls = new Set();
   const tiles = new Map();
+  let relayTrack = null, sharer = null;          // teacher side: a student whose screen is being shown to the whole class
+  const screenAllowed = new Set();               // teacher side: students allowed to share their screen
 
   let teacherName = TEACHER_LABEL || "Teacher";   // what students see on the teacher's video tile
   const attendance = [];                          // { id, name, joined, left }
@@ -178,7 +180,12 @@ window.addEventListener("load", () => {
     return t;
   }
   function dropTile(id) { const t = tiles.get(id); if (t) { t.d.remove(); tiles.delete(id); updGrid(); } }
-  function updGrid() { $("vgrid").classList.toggle("multi", tiles.size > 1); }   // several people: neat 16:9 tiles, same size for everyone
+  function presentId() { return isHost ? (sharer || "self") : HOST_PEER; }
+  function updPresent() {
+    $("vgrid").classList.toggle("sharing", screenOn);
+    tiles.forEach((t, id) => t.d.classList.toggle("present", screenOn && id === presentId()));
+  }
+  function updGrid() { $("vgrid").classList.toggle("multi", tiles.size > 1); updPresent(); }   // several people: neat 16:9 tiles, same size for everyone
 
   /* ---- camera / microphone ---- */
   function blackTrack() { const c = document.createElement("canvas"); c.width = c.height = 16; c.getContext("2d").fillRect(0, 0, 16, 16); return c.captureStream(5).getVideoTracks()[0]; }
@@ -199,7 +206,7 @@ window.addEventListener("load", () => {
     if (!st.getAudioTracks().length) { const a = silentTrack(); if (a) st.addTrack(a); }
     return st;
   }
-  const outVideo = () => (screenStream ? screenStream.getVideoTracks()[0] : camTrack);
+  const outVideo = () => relayTrack || (screenStream ? screenStream.getVideoTracks()[0] : camTrack);
   const outStream = () => new MediaStream([outVideo(), ...localStream.getAudioTracks()].filter(Boolean));
 
   function setMic(on) {
@@ -226,19 +233,22 @@ window.addEventListener("load", () => {
     if (t) { t.v.srcObject = new MediaStream([track, ...localStream.getAudioTracks()]); t.d.classList.toggle("screen", !!screenStream); }
   }
   // switch which camera picture (plain or with background effect) is sent and shown
-  function applyCamTrack(track) { camTrack = track; track.enabled = camOn; if (!screenStream) setOutVideo(track); }
+  function applyCamTrack(track) { camTrack = track; track.enabled = camOn; if (!screenStream && !relayTrack) setOutVideo(track); }
   async function toggleScreen() {
     if (screenStream) { stopScreen(); return; }
+    if (isHost && sharer) { toast("A student is sharing their screen. Stop it first.", { ms: 3000 }); return; }
     try { screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true }); } catch (e) { screenStream = null; return; }
     const tr = screenStream.getVideoTracks()[0]; tr.onended = stopScreen;
     setOutVideo(tr); $("scrBtn").classList.add("on");
     if (isHost) { bcast({ t: "screen", on: true }); screenMode(true); }
+    else bcast({ t: "scrshare", on: true });   // ask the teacher to show it to the class
   }
   function stopScreen() {
     if (!screenStream) return;
     const st = screenStream; screenStream = null; st.getTracks().forEach((t) => t.stop());
     setOutVideo(camTrack); $("scrBtn").classList.remove("on");
     if (isHost && screenOn) { bcast({ t: "screen", on: false }); screenMode(false); }
+    else if (!isHost) bcast({ t: "scrshare", on: false });
   }
   $("scrBtn").onclick = toggleScreen;
   if (!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia)) $("scrBtn").style.display = "none";
@@ -552,8 +562,34 @@ window.addEventListener("load", () => {
       call.on("close", () => calls.delete(call)); call.on("error", () => calls.delete(call));
     });
   }
+  function relayOut(track) {
+    calls.forEach((c) => {
+      if (sharer && c.peer === sharer) return;   // no need to send a student their own screen back
+      try { const sd = c.peerConnection && c.peerConnection.getSenders().find((x) => x.track && x.track.kind === "video"); if (sd) sd.replaceTrack(track).catch(() => {}); }
+      catch (e) { console.warn(e); }
+    });
+  }
+  function startRelay(id) {
+    const t = tiles.get(id), tr = t && t.v.srcObject && t.v.srcObject.getVideoTracks()[0];
+    if (!tr || screenStream || !screenAllowed.has(id) || (sharer && sharer !== id)) { bcast({ t: "scrdeny" }, [id]); return; }
+    sharer = id; relayTrack = tr; relayOut(tr);
+    const p = peers.get(id); toast(`${(p && p.name) || "A student"} is sharing their screen`, { ms: 3000 });
+    bcast({ t: "screen", on: true }); screenMode(true);
+  }
+  function stopRelay() {
+    if (!sharer) return;
+    sharer = null; relayTrack = null; relayOut(outVideo());
+    bcast({ t: "screen", on: false }); screenMode(false); updPresent();
+  }
+  function setScreenPerm(id, on) {
+    if (on) screenAllowed.add(id);
+    else { screenAllowed.delete(id); if (sharer === id) { bcast({ t: "scrdeny" }, [id]); stopRelay(); } }
+    bcast({ t: "scrperm", on }, [id]); renderPerm();
+  }
   function dropStudent(id) {
     const p = peers.get(id); if (!p) return;
+    if (sharer === id) stopRelay();
+    screenAllowed.delete(id);
     peers.delete(id);
     try { p.call && p.call.close(); } catch (e) { /* ignore */ }
     try { p.conn && p.conn.close(); } catch (e) { /* ignore */ }
@@ -715,7 +751,7 @@ window.addEventListener("load", () => {
     $("pjStudent").disabled = $("pjTeacher").disabled = true;
     localStream = await getLocalMedia(); rawCam = localStream.getVideoTracks()[0]; camTrack = rawCam;
     $("prejoin").style.display = "none";
-    if (!asHost) { $("vwrap").classList.add("guest"); document.body.classList.add("student"); $("handBtn").style.display = ""; }
+    if (!asHost) { $("vwrap").classList.add("guest"); document.body.classList.add("student"); $("handBtn").style.display = ""; $("scrBtn").style.display = "none"; }
     $("fxBtn").style.display = hasCam ? "" : "none";
     keepAwake(); startClock();
     ensureTile("self", myName, true).v.srcObject = localStream;
@@ -740,7 +776,7 @@ window.addEventListener("load", () => {
   // while the teacher shares their screen, everyone sees the full video view (the shared screen) instead of the whiteboard
   function screenMode(on, remote) {
     if (on === screenOn) return;
-    screenOn = on;
+    screenOn = on; updPresent();
     if (on) { modeBeforeScreen = main.dataset.mode; setMode("video", remote); }
     else { const m = modeBeforeScreen || "video"; modeBeforeScreen = null; setMode(m, remote); }
   }
@@ -996,7 +1032,7 @@ window.addEventListener("load", () => {
     if ($("share").checked) bcast({ t: "page", k: key, n: pdfInfo.n, total: pdfInfo.total }, to);
   }
 
-  const HOSTCMD = ["hello", "kick", "end", "mute", "lowerhand", "chatlock", "rec", "grid", "screen"];
+  const HOSTCMD = ["hello", "kick", "end", "mute", "lowerhand", "chatlock", "rec", "grid", "screen", "scrperm", "scrdeny"];
   function hostCmd(m) {
     switch (m.t) {
       case "hello": if (m.name) { teacherName = String(m.name).slice(0, 40); ensureTile(HOST_PEER, teacherName); } chatEnabled(m.chat !== false); showRec(!!m.rec); screenMode(!!m.scr, true); break;
@@ -1008,6 +1044,14 @@ window.addEventListener("load", () => {
       case "rec": showRec(!!m.on); break;
       case "grid": setGridStyle(m.v, true); break;
       case "screen": screenMode(!!m.on, true); break;
+      case "scrperm": {
+        const on = !!m.on && !!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia);
+        $("scrBtn").style.display = on ? "" : "none";
+        if (on) toast("The teacher allowed you to share your screen.", { ms: 3500 });
+        else if (screenStream) stopScreen();
+        break;
+      }
+      case "scrdeny": if (screenStream) stopScreen(); toast("The teacher did not allow screen sharing right now.", { ms: 3000 }); break;
     }
   }
   function onMsg(m, from) {
@@ -1017,6 +1061,11 @@ window.addEventListener("load", () => {
       p.hand = !!m.up; setHandMark(from, p.hand);
       if (p.hand) { toast(`${p.name} raised a hand`); beep(); }
       updateHandBadge(); refreshPerm(); return;
+    }
+    if (m.t === "scrshare") {
+      if (!isHost || !from) return;
+      if (m.on) startRelay(from); else if (sharer === from) stopRelay();
+      return;
     }
     if (HOSTCMD.includes(m.t)) { if (isHost || (from && from !== hostId)) return; hostCmd(m); return; }
     if (m.t === "perm") { if (from && from !== hostId) return; allowAll = !!m.all; allowed = new Set(m.ids || []); recalc(); return; }
@@ -1613,6 +1662,9 @@ window.addEventListener("load", () => {
       const canPen = allowAll || allowed.has(id);
       const d = btn(canPen ? "on" : "", "pen", allowAll ? "Everyone can draw" : "Allow this student to draw", () => { if (allowed.has(id)) allowed.delete(id); else allowed.add(id); sendPerm(); renderPerm(); });
       d.disabled = allowAll; d.setAttribute("aria-pressed", String(canPen)); row.append(d);
+      const canScr = screenAllowed.has(id);
+      const sc = btn(canScr ? "on" : "", "screen", canScr ? "Stop allowing screen sharing" : "Allow this student to share their screen", () => setScreenPerm(id, !screenAllowed.has(id)));
+      sc.setAttribute("aria-pressed", String(canScr)); row.append(sc);
       row.append(btn("", "mic-off", "Mute this student's microphone", () => { bcast({ t: "mute" }, [id]); toast(`Muted ${p.name}`, { ms: 2000 }); }));
       row.append(btn("danger", "x", "Remove from class", () => removeStudent(id, p.name)));
       box.append(row);
