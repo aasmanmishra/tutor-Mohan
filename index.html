@@ -284,7 +284,12 @@ window.addEventListener("error", function (e) {
     <p id="pjTag" class="pjTag"></p>
     <p id="pjWelcome" class="pjWelcome"></p>
     <label>Your name <input id="pjUser" maxlength="40" placeholder="Enter your full name" autocomplete="name"></label>
-    <label id="pjTeacherRow" style="display:none">Teacher passcode <input id="pjPass" type="password" autocomplete="current-password"></label>
+    <label id="pjTeacherRow" style="display:none">Teacher passcode
+      <span class="pwWrap">
+        <input id="pjPass" type="password" autocomplete="current-password">
+        <button type="button" id="pjShowPass" class="pwToggle" aria-label="Show passcode" aria-pressed="false">Show</button>
+      </span>
+    </label>
     <div class="btns"><button id="pjStudent" class="primary" type="button">Join class</button><button id="pjTeacher" type="button">Teacher login</button></div>
     <p class="muted" id="pjMsg"></p>
     <ul class="pjTips">
