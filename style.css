@@ -300,6 +300,13 @@ body.student .seg, body.student #vSplit { display: none; }
 .pjTips .ic { width: 16px; height: 16px; margin-top: 1px; color: var(--brand); }
 .pjFoot { margin: 0; font-size: 11.5px; color: #9ca3af; }
 .pjFoot:empty { display: none; }
+
+/* Show / Hide button inside the teacher passcode box */
+#prejoin .pwWrap { position: relative; display: block; }
+#prejoin .pwWrap input { width: 100%; padding-right: 74px; }
+#prejoin .pwWrap button.pwToggle { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); height: 30px; padding: 0 12px; border: 0; border-radius: 8px; background: #eef1f6; color: #374151; font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+#prejoin .pwWrap button.pwToggle:hover { background: #e1e6ef; }
+
 #ended { position: fixed; inset: 0; z-index: 9999; display: none; align-items: center; justify-content: center; flex-direction: column; gap: 14px; padding: 20px; text-align: center; color: #fff;
   background: radial-gradient(900px 500px at 50% -10%, color-mix(in srgb, var(--brand) 32%, transparent), transparent 65%), var(--bg); }
 #ended.show { display: flex; }
