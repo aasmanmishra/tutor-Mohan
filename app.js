@@ -85,6 +85,7 @@ window.addEventListener("load", () => {
   const turnedAway = new Set();                   // turned away while the class was locked
   const blocked = (id) => rejected.has(id) || turnedAway.has(id);
   let locked = false, chatOn = true, handUp = false;
+  let closeTimerStop = null;                      // stops the "close 30 min after the scheduled end" timer
 
   /* ---- branding ---- */
   function setLogo(el, logo) {
@@ -107,7 +108,7 @@ window.addEventListener("load", () => {
   $("pjTag").textContent = CFG.TAGLINE || "";
   $("pjWelcome").textContent = CFG.WELCOME_TEXT || "";
   $("pjFoot").textContent = CFG.FOOTER_TEXT || "";
-  $("pjVer").textContent = "v4 · files loaded OK";
+  $("pjVer").textContent = "v5";
   ["brandLogo", "pjLogo", "endedLogo"].forEach((id) => setLogo($(id), LOGO));
   (() => {
     const l = document.createElement("link"); l.rel = "icon";
@@ -465,7 +466,7 @@ window.addEventListener("load", () => {
       peer.on("open", (id) => {
         netBad(false); myId = id; hostId = id; recalc();
         if (ready) return; ready = true;
-        setStatus("Class is live. Use Invite to share the link with students.");
+        setStatus("Class is live. Students join from My Classes on the website.");
         setTimeout(() => { if ($("vstatus").textContent.startsWith("Class is live")) setStatus(""); }, 9000);
       });
       peer.on("connection", onStudentConn);
@@ -491,26 +492,65 @@ window.addEventListener("load", () => {
     return `${n} (${i})`;
   }
   /* ---- ticket check: is this incoming connection still allowed to join? ----
-     Every join link handed out by the site carries a short-lived, signed
-     ticket (uid/exp/sig). This asks the Apps Script gate to verify it, on
-     every single connection attempt, instead of trusting the link forever
-     once it's been shared. One fetch per student, cached, and shared
-     between their data connection and their video call. */
-  const verifyState = new Map();   // peer id -> Promise<boolean>
+     Every join link handed out by the site carries a signed ticket
+     (uid/exp/sig). This asks the Apps Script gate to verify it, on every
+     connection attempt, instead of trusting the link forever once it has
+     been shared. The gate answers { valid, canHost, endsAtMs, closeAtMs }:
+       valid    - the ticket is real and the class is still open
+                  (open until 30 min after the scheduled end)
+       canHost  - true ONLY for the admin or the teacher assigned to the class
+       closeAtMs - when the class must close automatically
+     The result is an object (never just true/false). */
+  const verifyState = new Map();   // peer id -> Promise<boolean>   (host side, one check per student)
   function verifyGuestTicket(meta) {
-    if (!GATE_URL) return Promise.resolve(true);   // not configured: skip the check
+    if (!GATE_URL) return Promise.resolve({ valid: true, canHost: true, endsAtMs: 0, closeAtMs: 0 });   // not configured: skip the check
     const uid = meta && meta.uid, exp = meta && meta.exp, sig = meta && meta.sig;
-    if (!uid || !exp || !sig) return Promise.resolve(false);
+    if (!uid || !exp || !sig) return Promise.resolve({ valid: false, canHost: false, endsAtMs: 0, closeAtMs: 0 });
     const qs = new URLSearchParams({ action: "verifyTicket", id: ROOM_ID, uid: uid, exp: exp, sig: sig });
     return fetch(GATE_URL + "?" + qs.toString())
       .then((res) => res.json())
-      .then((data) => !!(data && data.ok && data.valid))
-      .catch((e) => { console.warn("ticket check failed", e); return false; });
+      .then((data) => ({
+        valid: !!(data && data.ok && data.valid),
+        canHost: !!(data && data.ok && data.valid && data.canHost),
+        endsAtMs: Number(data && data.endsAtMs) || 0,
+        closeAtMs: Number(data && data.closeAtMs) || 0
+      }))
+      .catch((e) => { console.warn("ticket check failed", e); return { valid: false, canHost: false, endsAtMs: 0, closeAtMs: 0 }; });
   }
   function ensureVerified(peerLike) {
     const id = peerLike.peer;
-    if (!verifyState.has(id)) verifyState.set(id, verifyGuestTicket(peerLike.metadata));
+    if (!verifyState.has(id)) verifyState.set(id, verifyGuestTicket(peerLike.metadata).then((r) => !!(r && r.valid)));
     return verifyState.get(id);
+  }
+
+  /* ---- automatic close: 30 minutes after the scheduled end ----
+     The class never stops by itself at the scheduled end (the teacher may
+     keep teaching). At the scheduled end everyone gets a notice, 5 minutes
+     before the close everyone gets a warning, and at the close time the
+     teacher's browser ends the class for everyone. Students' browsers also
+     close themselves, in case the teacher's browser is gone. */
+  function startCloseTimer(endsAtMs, closeAtMs) {
+    if (!closeAtMs || closeTimerStop) return;
+    let warnedEnd = false, warned5 = false;
+    closeTimerStop = ticker(() => {
+      if (ended) { if (closeTimerStop) { closeTimerStop(); closeTimerStop = null; } return; }
+      const now = Date.now();
+      if (!warnedEnd && endsAtMs && now >= endsAtMs) {
+        warnedEnd = true;
+        toast(isHost ? "The scheduled class time is over. You can keep teaching. The class will close automatically 30 minutes after the scheduled end." : "The scheduled class time is over. The class will close automatically 30 minutes after the scheduled end.", { type: "warn", ms: 12000 });
+      }
+      if (!warned5 && now >= closeAtMs - 5 * 60 * 1000) {
+        warned5 = true; toast("This class will close in about 5 minutes.", { type: "warn", ms: 12000 }); if (isHost) beep();
+      }
+      if (now >= closeAtMs) {
+        if (closeTimerStop) { closeTimerStop(); closeTimerStop = null; }
+        if (isHost) {
+          bcast({ t: "end" });
+          if (attendance.length) downloadAttendance();
+          setTimeout(() => showEnded("The class time is over, so the class was closed automatically. Thanks for teaching!"), 400);
+        } else showEnded("The class time is over. Thanks for joining!");
+      }
+    }, 5000);
   }
 
   function onStudentConn(conn) {
@@ -659,6 +699,7 @@ window.addEventListener("load", () => {
     if (ended) return;
     if (isHost) { finishRecording(); const n = new Date(); attendance.forEach((a) => { if (!a.left) a.left = n; }); }
     ended = true; leaving = true;
+    try { if (closeTimerStop) { closeTimerStop(); closeTimerStop = null; } } catch (e) { /* ignore */ }
     $("endedMsg").textContent = msg || "The class has ended. Thanks for joining!";
     try { wl && wl.release(); } catch (e) { /* ignore */ }
     try { peer && peer.destroy(); } catch (e) { /* ignore */ }
@@ -702,17 +743,18 @@ window.addEventListener("load", () => {
   if (GATE_URL) {
     // a bare link (no ticket) cannot be used at all; a link with a ticket is checked with the gate
     if (!TICKET_SIG) { pjMsg("Open this class from My Classes on the website to join."); $("pjStudent").disabled = $("pjTeacher").disabled = true; }
-    else verifyGuestTicket({ uid: TICKET_UID, exp: TICKET_EXP, sig: TICKET_SIG }).then((ok) => { if (!ok) pjMsg("This class link is not active right now. Open the class from My Classes on the website during class time."); });
+    else verifyGuestTicket({ uid: TICKET_UID, exp: TICKET_EXP, sig: TICKET_SIG }).then((r) => { if (!r.valid) pjMsg("This class link is not active right now. Open the class from My Classes on the website during class time."); });
   }
   let fails = 0, lockUntil = 0;
   async function enter(asHost) {
     if (entering) return;
     let who = null;   // the teacher whose passcode matched
+    let ticket = null; // result of the gate check for this link
     if (typeof Peer === "undefined") { pjMsg("Could not load the connection library. Check your internet and reload."); return; }
     if (!asHost) {
       // students need a valid, currently-active ticket before the camera starts or anything connects
-      const okTicket = await verifyGuestTicket({ uid: TICKET_UID, exp: TICKET_EXP, sig: TICKET_SIG });
-      if (!okTicket) { pjMsg("This class link is not active right now. Open the class from My Classes on the website during class time."); return; }
+      ticket = await verifyGuestTicket({ uid: TICKET_UID, exp: TICKET_EXP, sig: TICKET_SIG });
+      if (!ticket.valid) { pjMsg("This class link is not active right now. Open the class from My Classes on the website during class time."); return; }
     }
     if (asHost) {
       const wait = Math.ceil((lockUntil - Date.now()) / 1000);
@@ -731,16 +773,18 @@ window.addEventListener("load", () => {
       if (who.rooms && !who.rooms.some((r) => cleanId(r).toLowerCase() === ROOM_ID.toLowerCase())) {
         pjMsg("This passcode is not allowed to host this class room."); return;
       }
-      // A correct passcode alone is no longer enough to become host. The
-      // link must also carry a valid, currently-active ticket for this
-      // exact class - the same ticket the site hands to students. The
-      // gate (Code.gs) only ever issues one to an admin at any time, or to
-      // a teacher inside that class's join window (10 min before to
-      // 30 min after) - so a teacher can only host during that window,
-      // while an admin can always fetch a fresh valid one from the site.
-      const ticketOk = await verifyGuestTicket({ uid: TICKET_UID, exp: TICKET_EXP, sig: TICKET_SIG });
-      if (!ticketOk) {
+      // A correct passcode alone is not enough to become host. The link must
+      // also carry a valid ticket for this exact class AND the gate must say
+      // it is a HOST ticket. The gate (Code.gs v6) gives a host ticket only to
+      // the admin, or to the teacher assigned to this class. A student's link
+      // is never a host ticket, even with the right passcode.
+      ticket = await verifyGuestTicket({ uid: TICKET_UID, exp: TICKET_EXP, sig: TICKET_SIG });
+      if (!ticket.valid) {
         pjMsg("This link isn't valid to host right now. Open the class from My Classes on the site to get a fresh link.");
+        return;
+      }
+      if (!ticket.canHost) {
+        pjMsg("This link belongs to a student account, so it cannot start the class. Only the assigned teacher or the admin can start it.");
         return;
       }
     }
@@ -764,6 +808,8 @@ window.addEventListener("load", () => {
       $("shareBtn").style.display = GATE_URL ? "none" : ""; $("permBtn").style.display = ""; $("showAllWrap").style.display = "";
       recalc(); startHost();
     } else startGuest();
+    // automatic close 30 minutes after the scheduled end (needs the gate's closeAtMs)
+    if (ticket) startCloseTimer(ticket.endsAtMs, ticket.closeAtMs);
     restoreEffect();
   }
   $("pjTeacher").onclick = () => { if (!teacherMode) setTeacherMode(true); else enter(true); };
@@ -1650,7 +1696,7 @@ window.addEventListener("load", () => {
     $("allowAll").checked = allowAll; $("lockClass").checked = locked; $("chatOnChk").checked = chatOn;
     const list = []; peers.forEach((p, id) => { if (p.conn && p.conn.open) list.push({ id, p }); });
     $("pCount").textContent = `${list.length} student${list.length === 1 ? "" : "s"} online`;
-    if (!list.length) { const e = document.createElement("div"); e.className = "muted2"; e.style.padding = "14px 0"; e.textContent = "No students have joined yet. Use Invite to share the class link."; box.append(e); return; }
+    if (!list.length) { const e = document.createElement("div"); e.className = "muted2"; e.style.padding = "14px 0"; e.textContent = "No students have joined yet. Students join from My Classes on the website."; box.append(e); return; }
     list.forEach(({ id, p }) => {
       const row = document.createElement("div"); row.className = "prow";
       const av = document.createElement("span"); av.className = "av"; av.textContent = initials(p.name); av.style.background = avColor(p.name); row.append(av);
