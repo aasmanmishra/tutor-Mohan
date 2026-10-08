@@ -178,7 +178,7 @@ window.addEventListener("load", () => {
     return t;
   }
   function dropTile(id) { const t = tiles.get(id); if (t) { t.d.remove(); tiles.delete(id); updGrid(); } }
-  function updGrid() { $("vgrid").classList.toggle("multi", tiles.size > 1); }   // several people: neat 16:9 tiles
+  function updGrid() { $("vgrid").classList.toggle("multi", tiles.size - (tiles.has("self") && !isHost ? 1 : 0) > 1); }   // several people: neat 16:9 tiles (a student's hidden self tile is not counted)
 
   /* ---- camera / microphone ---- */
   function blackTrack() { const c = document.createElement("canvas"); c.width = c.height = 16; c.getContext("2d").fillRect(0, 0, 16, 16); return c.captureStream(5).getVideoTracks()[0]; }
@@ -232,11 +232,13 @@ window.addEventListener("load", () => {
     try { screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true }); } catch (e) { screenStream = null; return; }
     const tr = screenStream.getVideoTracks()[0]; tr.onended = stopScreen;
     setOutVideo(tr); $("scrBtn").classList.add("on");
+    if (isHost) { bcast({ t: "screen", on: true }); screenMode(true); }
   }
   function stopScreen() {
     if (!screenStream) return;
     const st = screenStream; screenStream = null; st.getTracks().forEach((t) => t.stop());
     setOutVideo(camTrack); $("scrBtn").classList.remove("on");
+    if (isHost && screenOn) { bcast({ t: "screen", on: false }); screenMode(false); }
   }
   $("scrBtn").onclick = toggleScreen;
   if (!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia)) $("scrBtn").style.display = "none";
@@ -526,11 +528,11 @@ window.addEventListener("load", () => {
         if (a) a.left = null; else { a = { id, name: p.name, joined: new Date(), left: null }; attendance.push(a); addSys(`${p.name} joined`); }
         p.att = a;
         ensureTile(id, p.name);
-        bcast({ t: "hello", name: teacherName, chat: chatOn, rec: !!recorder }, [id]);
+        bcast({ t: "hello", name: teacherName, chat: chatOn, rec: !!recorder, scr: screenOn }, [id]);
         sendPerm([id]);
         if (gridStyle !== "dots") bcast({ t: "grid", v: gridStyle }, [id]);
         if ($("showAll").checked) bcast({ t: "mode", m: main.dataset.mode }, [id]);
-        sendState(id); refreshPerm();
+        sendState(id); sendViewTo([id]); refreshPerm();
       });
     });
     conn.on("data", (d) => onData(id, d));
@@ -724,7 +726,19 @@ window.addEventListener("load", () => {
 
   /* =====================  LAYOUT  ===================== */
   const main = $("main"), stage = $("stage"), vwrap = $("vwrap");
+  let screenOn = false, modeBeforeScreen = null;
+  // while the teacher shares their screen, everyone sees the full video view (the shared screen) instead of the whiteboard
+  function screenMode(on, remote) {
+    if (on === screenOn) return;
+    screenOn = on;
+    if (on) { modeBeforeScreen = main.dataset.mode; setMode("video", remote); }
+    else { const m = modeBeforeScreen || "video"; modeBeforeScreen = null; setMode(m, remote); }
+  }
   function setMode(m, remote) {
+    if (screenOn && m !== "video") {
+      if (!remote) toast(isHost ? "Stop screen sharing to use the whiteboard." : "The teacher is sharing their screen.", { ms: 2500 });
+      return;
+    }
     main.dataset.mode = m;
     if (isHost && !remote && $("showAll").checked) bcast({ t: "mode", m });
     document.querySelectorAll("#top [data-mode]").forEach((b) => { const on = b.dataset.mode === m; b.classList.toggle("active", on); b.setAttribute("aria-pressed", String(on)); });
@@ -904,7 +918,7 @@ window.addEventListener("load", () => {
   const SHAPES_ALL = [...LINEISH, ...CLOSED, "axes"];
 
   // ---- host / permissions ----
-  const WRITE = ["put", "putn", "pt", "del", "clear", "bg", "page", "laser"];
+  const WRITE = ["put", "putn", "pt", "del", "clear", "bg", "page", "laser", "view"];
   let isHost = false, hostId = null, allowAll = false, allowed = new Set(), canDraw = false;
   const authorized = (id) => id === hostId || allowAll || allowed.has(id);
   function recalc() {
@@ -913,6 +927,7 @@ window.addEventListener("load", () => {
     $("viewOnly").style.display = canDraw ? "none" : "block";
     $("board").classList.toggle("ro", !canDraw);
     if (!canDraw) setTool("hand"); else if (!was) setTool("pen");
+    snapView();
     updUI();
   }
   function sendPerm(to) { bcast({ t: "perm", all: allowAll, ids: Array.from(allowed) }, to); }
@@ -930,6 +945,7 @@ window.addEventListener("load", () => {
     const r = wrap.getBoundingClientRect(); dpr = window.devicePixelRatio || 1;
     cv.width = Math.max(1, Math.round(r.width * dpr)); cv.height = Math.max(1, Math.round(r.height * dpr));
     dirty = true;
+    snapView();
   }
   new ResizeObserver(resizeCanvas).observe(wrap);
   window.addEventListener("resize", resizeCanvas);
@@ -951,6 +967,7 @@ window.addEventListener("load", () => {
     const img = new Image(); img.onload = () => { dirty = true; }; img.src = data;
     pg(k).bg = { img, data, w, h };
     dirty = true;
+    if (k === key) snapView();
   }
 
   function sendState(id) {
@@ -968,10 +985,10 @@ window.addEventListener("load", () => {
     if ($("share").checked) bcast({ t: "page", k: key, n: pdfInfo.n, total: pdfInfo.total }, to);
   }
 
-  const HOSTCMD = ["hello", "kick", "end", "mute", "lowerhand", "chatlock", "rec", "grid"];
+  const HOSTCMD = ["hello", "kick", "end", "mute", "lowerhand", "chatlock", "rec", "grid", "screen"];
   function hostCmd(m) {
     switch (m.t) {
-      case "hello": if (m.name) { teacherName = String(m.name).slice(0, 40); ensureTile(HOST_PEER, teacherName); } chatEnabled(m.chat !== false); showRec(!!m.rec); break;
+      case "hello": if (m.name) { teacherName = String(m.name).slice(0, 40); ensureTile(HOST_PEER, teacherName); } chatEnabled(m.chat !== false); showRec(!!m.rec); screenMode(!!m.scr, true); break;
       case "kick": showEnded(m.reason === "locked" ? "This class is locked. Ask your teacher to unlock it, then rejoin." : "You were removed from the class by the teacher."); break;
       case "end": showEnded("The teacher ended the class. Thanks for joining!"); break;
       case "mute": { const t = localStream && localStream.getAudioTracks()[0]; if (t && t.enabled) { setMic(false); toast("The teacher muted your microphone."); } break; }
@@ -979,6 +996,7 @@ window.addEventListener("load", () => {
       case "chatlock": chatEnabled(m.on !== false); break;
       case "rec": showRec(!!m.on); break;
       case "grid": setGridStyle(m.v, true); break;
+      case "screen": screenMode(!!m.on, true); break;
     }
   }
   function onMsg(m, from) {
@@ -1003,10 +1021,12 @@ window.addEventListener("load", () => {
       case "page":
         pdfInfo = { n: m.n || 1, total: m.total || 1 };
         switchPage(m.k, true);
+        snapView();
         if (m.k !== "board" && !pg(m.k).bg && from) bcast({ t: "needbg", k: m.k }, [from]);
         break;
       case "needbg": { const b = pg(m.k).bg; if (b && from) bcast({ t: "bg", k: m.k, img: b.data, w: b.w, h: b.h }, [from]); break; }
       case "laser": if (isFinite(m.x) && isFinite(m.y) && m.u !== myId) addLaser(String(m.u || from), m.k, +m.x, +m.y); return;
+      case "view": if (isFinite(m.x) && isFinite(m.y) && isFinite(m.z) && m.z > 0) { syncView = { k: m.k, c: m.c ? 1 : 0, x: +m.x, y: +m.y, z: +m.z }; if (m.k === key) applyView(syncView); } return;
     }
     dirty = true; updUI();
   }
@@ -1254,6 +1274,7 @@ window.addEventListener("load", () => {
   function zoomAt(cx, cy, f) {
     const ns = clamp(view.s * f, 0.1, 8), r = ns / view.s;
     view.x = cx - (cx - view.x) * r; view.y = cy - (cy - view.y) * r; view.s = ns; dirty = true;
+    sendViewSoon();
   }
   function fitView() {
     const r = wrap.getBoundingClientRect(), b = pg(key).bg;
@@ -1261,15 +1282,43 @@ window.addEventListener("load", () => {
     else { view.s = 1; view.x = 0; view.y = 0; }
     dirty = true;
   }
-  $("zIn").onclick = () => { const r = wrap.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1.25); };
-  $("zOut").onclick = () => { const r = wrap.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 0.8); };
-  $("zFit").onclick = fitView;
+
+  /* ---- view sync: the teacher (or a student allowed to draw) controls what everyone sees ---- */
+  let syncView = null, viewTimer = null;
+  function viewFit(k, w, h) { const b = pg(k).bg; return b ? Math.min((w - 40) / b.w, (h - 40) / b.h) : 1; }
+  function currentViewMsg() {
+    const r = wrap.getBoundingClientRect(), b = pg(key).bg, s = view.s;
+    if (b) return { t: "view", k: key, c: 1, x: (r.width / 2 - view.x) / s, y: (r.height / 2 - view.y) / s, z: s / viewFit(key, r.width, r.height) };
+    return { t: "view", k: key, c: 0, x: -view.x / s, y: -view.y / s, z: s };
+  }
+  function applyView(v) {
+    const r = wrap.getBoundingClientRect(); if (r.width < 10 || r.height < 10) return;
+    if (v.c) { const s = clamp(v.z * viewFit(v.k, r.width, r.height), 0.05, 16); view.s = s; view.x = r.width / 2 - v.x * s; view.y = r.height / 2 - v.y * s; }
+    else { view.s = clamp(v.z, 0.1, 8); view.x = -v.x * view.s; view.y = -v.y * view.s; }
+    dirty = true;
+  }
+  function snapView() {
+    if (canDraw) return;
+    const r = wrap.getBoundingClientRect(); if (r.width < 10 || r.height < 10) return;
+    if (syncView && syncView.k === key) applyView(syncView); else fitView();
+  }
+  function sendViewSoon() {
+    if (!canDraw || viewTimer) return;
+    viewTimer = setTimeout(() => { viewTimer = null; if (canDraw) bcast(currentViewMsg()); }, 40);
+  }
+  function sendViewTo(to) { if (canDraw) bcast(currentViewMsg(), to); }
+
+  $("zIn").onclick = () => { if (!canDraw) return; const r = wrap.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 1.25); };
+  $("zOut").onclick = () => { if (!canDraw) return; const r = wrap.getBoundingClientRect(); zoomAt(r.width / 2, r.height / 2, 0.8); };
+  $("zFit").onclick = () => { if (!canDraw) return; fitView(); sendViewSoon(); };
   cv.addEventListener("wheel", (e) => {
-    e.preventDefault(); const s = scr(e);
+    e.preventDefault();
+    if (!canDraw) return;
+    const s = scr(e);
     if (e.ctrlKey || e.metaKey) zoomAt(s[0], s[1], Math.exp(-e.deltaY * (Math.abs(e.deltaY) < 30 ? 0.01 : 0.0025)));
     else if (e.shiftKey) view.x -= e.deltaY;
     else { view.x -= e.deltaX; view.y -= e.deltaY; }
-    dirty = true;
+    dirty = true; sendViewSoon();
   }, { passive: false });
 
   /* ---- pages / PDF ---- */
@@ -1296,7 +1345,7 @@ window.addEventListener("load", () => {
       setBg(k, c.toDataURL("image/jpeg", 0.72), 1000, 1000 * v1.height / v1.width);
     }
     pdfInfo = { n, total: pdfDoc.numPages };
-    switchPage(k, true); broadcastPage(k);
+    switchPage(k, true); broadcastPage(k); sendViewSoon();
   }
   $("pdfBtn").onclick = () => $("pdfFile").click();
   $("pdfFile").onchange = async (e) => {
@@ -1310,7 +1359,7 @@ window.addEventListener("load", () => {
   };
   $("pPrev").onclick = () => gotoPdfPage(pdfInfo.n - 1);
   $("pNext").onclick = () => gotoPdfPage(pdfInfo.n + 1);
-  $("pBoard").onclick = () => { switchPage("board", true); broadcastPage("board"); };
+  $("pBoard").onclick = () => { switchPage("board", true); broadcastPage("board"); sendViewSoon(); };
 
   /* ---- board background menu (dots / squares / lines / plain) ---- */
   function markGrid() { document.querySelectorAll("#gridMenu [data-grid]").forEach((b) => { const on = b.dataset.grid === gridStyle; b.classList.toggle("on", on); b.setAttribute("aria-checked", String(on)); }); }
@@ -1367,7 +1416,7 @@ window.addEventListener("load", () => {
     if (inM) { lastOf.math = t; setIcon($("grpMath"), t); }
     $("grpShapes").classList.toggle("active", inS); $("grpMath").classList.toggle("active", inM);
     closeFlies();
-    cv.style.cursor = { select: "default", hand: "grab", text: "text", eraser: "cell" }[t] || "crosshair";
+    cv.style.cursor = !canDraw ? "default" : ({ select: "default", hand: "grab", text: "text", eraser: "cell" }[t] || "crosshair");
     updStyleBar(); dirty = true;
   }
   document.querySelectorAll("[data-tool]").forEach((b) => b.addEventListener("click", () => setTool(b.dataset.tool)));
@@ -1464,6 +1513,7 @@ window.addEventListener("load", () => {
   cv.addEventListener("pointerdown", (e) => {
     e.preventDefault(); commitText(); cv.setPointerCapture(e.pointerId);
     const s = scr(e), w = wor(s), p = pg(key);
+    if (!canDraw) return;   // viewers can't pan or move the page
     if (e.button === 1 || e.button === 2 || S.tool === "hand" || spaceDown) { mode = "pan"; panSt = { s, x: view.x, y: view.y }; cv.style.cursor = "grabbing"; return; }
     if (e.button !== 0 || !canDraw) return;
     curKey = key; const t = S.tool;
@@ -1484,7 +1534,7 @@ window.addEventListener("load", () => {
     if (S.tool === "laser" && canDraw && !mode) { sendLaser(wor(scr(e))); return; }
     if (!mode) return;
     const s = scr(e), w = wor(s);
-    if (mode === "pan") { view.x = panSt.x + (s[0] - panSt.s[0]); view.y = panSt.y + (s[1] - panSt.s[1]); }
+    if (mode === "pan") { view.x = panSt.x + (s[0] - panSt.s[0]); view.y = panSt.y + (s[1] - panSt.s[1]); sendViewSoon(); }
     else if (mode === "draw") {
       const l = cur.pts[cur.pts.length - 1];
       if (Math.hypot(w[0] - l[0], w[1] - l[1]) >= 1.2 / view.s) { cur.pts.push(w); penBuf.pts.push(w); }
