@@ -64,7 +64,10 @@ window.addEventListener("load", () => {
   const params = new URLSearchParams(location.search);
   const cleanId = (x) => String(x || "").replace(/[^A-Za-z0-9_-]/g, "").replace(/[-_]{2,}/g, "-").replace(/^[-_]+|[-_]+$/g, "").slice(0, 60);
   const ROOM_ID = cleanId(params.get("room")) || cleanId(ROOM) || "class";
-  const HOST_PEER = `${NAMESPACE}-${ROOM_ID}-host`;
+  const HOST_BASE = `${NAMESPACE}-${ROOM_ID}-host`;
+  // backup names: used when the main name is stuck because of a leftover of an old session
+  const HOST_IDS = [HOST_BASE, HOST_BASE + "-2", HOST_BASE + "-3"];
+  let HOST_PEER = HOST_BASE;
   const ROLE_PARAM = params.get("role");
   const TICKET_UID = params.get("uid") || "";
   const TICKET_EXP = params.get("exp") || "";
@@ -108,7 +111,7 @@ window.addEventListener("load", () => {
   $("pjTag").textContent = CFG.TAGLINE || "";
   $("pjWelcome").textContent = CFG.WELCOME_TEXT || "";
   $("pjFoot").textContent = CFG.FOOTER_TEXT || "";
-  $("pjVer").textContent = "v7";
+  $("pjVer").textContent = "v8";
   ["brandLogo", "pjLogo", "endedLogo"].forEach((id) => setLogo($(id), LOGO));
   (() => {
     const l = document.createElement("link"); l.rel = "icon";
@@ -333,7 +336,7 @@ window.addEventListener("load", () => {
     catch (e) { if (!quiet) toast("Could not open the floating video.", { type: "warn" }); return false; }
   }
   async function autoPip() {
-    if (pip || !(pipDoc || pipOld)) return;
+    if (!isHost || pip || !(pipDoc || pipOld)) return;   // the floating video is for the teacher only
     const ok = pipDoc ? await openPip(true) : false;
     if (ok) pipAuto = true;
     else toast("Tip: click “Float video” to keep the other person and yourself on top while you share.", { ms: 7000 });
@@ -552,10 +555,12 @@ window.addEventListener("load", () => {
     const open = () => {
       if (leaving) return;
       setStatus("Starting class…");
+      HOST_PEER = tries < 10 ? HOST_IDS[0] : HOST_IDS[(tries - 10) % HOST_IDS.length];   // main name first; backups if it stays stuck
       peer = new Peer(HOST_PEER, PEER_OPTS);
       peer.on("open", (id) => {
         netBad(false); myId = id; hostId = id; recalc();
         if (ready) return; ready = true;
+        if (HOST_PEER !== HOST_BASE) toast("Your usual room name was stuck, so a backup name is used. Students connect automatically, which can take up to 30 seconds.", { type: "warn", ms: 10000 });
         setStatus("Class is live. Students join from My Classes on the website.");
         setTimeout(() => { if ($("vstatus").textContent.startsWith("Class is live")) setStatus(""); }, 9000);
       });
@@ -745,7 +750,7 @@ window.addEventListener("load", () => {
   /* ---- student ---- */
   function startGuest() {
     peer = new Peer(undefined, PEER_OPTS);
-    let timer = null;
+    let timer = null, attempt = 0;
     const waitMsg = "Waiting for the teacher to start the class…";
     const schedule = (msg, ms) => { if (leaving) return; setStatus(msg); clearTimeout(timer); timer = setTimeout(connectHost, ms || 3000); };
     const linked = (conn) => {
@@ -760,16 +765,18 @@ window.addEventListener("load", () => {
       const p = peers.get(HOST_PEER); peers.delete(HOST_PEER);
       try { p && p.call && p.call.close(); } catch (e) { /* ignore */ }
       calls.clear(); dropTile(HOST_PEER); hostId = null; recalc();
+      attempt = Math.max(0, HOST_IDS.indexOf(HOST_PEER));   // try the same name first when reconnecting
       schedule("The teacher disconnected. Waiting to reconnect…");
     };
     const connectHost = () => {
       if (leaving || !peer || peer.destroyed) return;
       if (peer.disconnected) { try { peer.reconnect(); } catch (e) { /* ignore */ } }
       setStatus("Connecting to the teacher…");
-      const conn = peer.connect(HOST_PEER, { reliable: true, metadata: { name: myName, uid: TICKET_UID, exp: TICKET_EXP, sig: TICKET_SIG } });
+      const target = HOST_IDS[attempt++ % HOST_IDS.length];   // main name, then the backup names
+      const conn = peer.connect(target, { reliable: true, metadata: { name: myName, uid: TICKET_UID, exp: TICKET_EXP, sig: TICKET_SIG } });
       let opened = false;
-      conn.on("open", () => { opened = true; clearTimeout(timer); linked(conn); });
-      conn.on("data", (d) => onData(HOST_PEER, d));
+      conn.on("open", () => { opened = true; clearTimeout(timer); HOST_PEER = target; linked(conn); });
+      conn.on("data", (d) => onData(target, d));
       conn.on("close", () => { if (opened) { const p = peers.get(HOST_PEER); if (p && p.conn === conn) lost(); } });
       conn.on("error", () => {});
       clearTimeout(timer);
@@ -886,7 +893,7 @@ window.addEventListener("load", () => {
     $("pjStudent").disabled = $("pjTeacher").disabled = true;
     localStream = await getLocalMedia(); rawCam = localStream.getVideoTracks()[0]; camTrack = rawCam;
     $("prejoin").style.display = "none";
-    if (!asHost) { $("vwrap").classList.add("guest"); document.body.classList.add("student"); $("handBtn").style.display = ""; $("scrBtn").style.display = "none"; }
+    if (!asHost) { $("vwrap").classList.add("guest"); document.body.classList.add("student"); $("handBtn").style.display = ""; $("scrBtn").style.display = "none"; $("pipBtn").style.display = "none"; }
     $("fxBtn").style.display = hasCam ? "" : "none";
     keepAwake(); startClock();
     ensureTile("self", myName, true).v.srcObject = localStream;
