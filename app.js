@@ -108,7 +108,7 @@ window.addEventListener("load", () => {
   $("pjTag").textContent = CFG.TAGLINE || "";
   $("pjWelcome").textContent = CFG.WELCOME_TEXT || "";
   $("pjFoot").textContent = CFG.FOOTER_TEXT || "";
-  $("pjVer").textContent = "v6";
+  $("pjVer").textContent = "v7";
   ["brandLogo", "pjLogo", "endedLogo"].forEach((id) => setLogo($(id), LOGO));
   (() => {
     const l = document.createElement("link"); l.rel = "icon";
@@ -564,8 +564,8 @@ window.addEventListener("load", () => {
       peer.on("disconnected", () => { netBad(true); if (!leaving && peer && !peer.destroyed) { try { peer.reconnect(); } catch (e) { /* ignore */ } } });
       peer.on("error", (err) => {
         if (err.type === "unavailable-id") {
-          if (++tries > 20) { setStatus("This class is already open in another tab or device. Close it, then reload this page."); return; }
-          setStatus(`Room busy (an old session may still be closing)… retry ${tries}/20`);
+          if (++tries > 60) { setStatus("This class is already open in another tab or device. Close it, then reload this page."); return; }
+          setStatus(`Room busy (an old session may still be closing)… retry ${tries}/60`);
           try { peer.destroy(); } catch (e) { /* ignore */ }
           setTimeout(open, 3000);
         } else if (err.type === "peer-unavailable") { /* a student left early */ }
@@ -1880,6 +1880,8 @@ window.addEventListener("load", () => {
   async function keepAwake() { try { if ("wakeLock" in navigator) wl = await navigator.wakeLock.request("screen"); } catch (e) { /* ignore */ } }
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && !ended && localStream) keepAwake(); });
   window.addEventListener("beforeunload", (e) => { if (isHost && !ended) { e.preventDefault(); e.returnValue = ""; } });
+  // free the room name at once when the page is reloaded or closed, so the next page does not get "Room busy"
+  window.addEventListener("pagehide", (e) => { if (e.persisted) return; try { peer && !peer.destroyed && peer.destroy(); } catch (err) { /* ignore */ } });
   window.addEventListener("offline", () => { netBad(true); toast("You are offline. Reconnecting when your internet returns…", { type: "bad", ms: 4000 }); });
   window.addEventListener("online", () => {
     netBad(false); toast("Back online.", { ms: 2500 });
