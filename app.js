@@ -108,7 +108,7 @@ window.addEventListener("load", () => {
   $("pjTag").textContent = CFG.TAGLINE || "";
   $("pjWelcome").textContent = CFG.WELCOME_TEXT || "";
   $("pjFoot").textContent = CFG.FOOTER_TEXT || "";
-  $("pjVer").textContent = "v5";
+  $("pjVer").textContent = "v6";
   ["brandLogo", "pjLogo", "endedLogo"].forEach((id) => setLogo($(id), LOGO));
   (() => {
     const l = document.createElement("link"); l.rel = "icon";
@@ -241,6 +241,7 @@ window.addEventListener("load", () => {
     try { screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true }); } catch (e) { screenStream = null; return; }
     const tr = screenStream.getVideoTracks()[0]; tr.onended = stopScreen;
     setOutVideo(tr); $("scrBtn").classList.add("on");
+    autoPip();   // float the video window so the other person and you stay visible while sharing
     if (isHost) { bcast({ t: "screen", on: true }); screenMode(true); }
     else bcast({ t: "scrshare", on: true });   // ask the teacher to show it to the class
   }
@@ -248,11 +249,100 @@ window.addEventListener("load", () => {
     if (!screenStream) return;
     const st = screenStream; screenStream = null; st.getTracks().forEach((t) => t.stop());
     setOutVideo(camTrack); $("scrBtn").classList.remove("on");
+    if (pipAuto) closePip();   // close the floating window that opened by itself when sharing started
     if (isHost && screenOn) { bcast({ t: "screen", on: false }); screenMode(false); }
     else if (!isHost) bcast({ t: "scrshare", on: false });
   }
   $("scrBtn").onclick = toggleScreen;
   if (!(navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia)) $("scrBtn").style.display = "none";
+
+  /* ---- floating video window (picture in picture) ----
+     While you share a screen, your own call page is hidden behind the shared window.
+     This opens a small window that stays on top of everything and shows the other
+     person and yourself (your camera, not your screen). Needs desktop Chrome or Edge 116+.
+     Other browsers can float just the other person's video. */
+  let pip = null, pipTimer = null, pipAuto = false, pipSelf = null;
+  const pipEls = new Map();   // tile id -> { d, v, n } inside the floating window
+  const pipDoc = "documentPictureInPicture" in window;
+  const pipOld = !pipDoc && !!document.pictureInPictureEnabled;
+  const pipBtn = $("scrBtn").cloneNode(true);
+  pipBtn.id = "pipBtn"; pipBtn.classList.remove("on"); pipBtn.removeAttribute("aria-pressed");
+  pipBtn.style.display = pipDoc || pipOld ? "" : "none";
+  pipBtn.title = "Float video: keep the other person and yourself on top while sharing";
+  pipBtn.setAttribute("aria-label", "Float video");
+  (() => {
+    const ic = document.createElementNS(SVGNS, "svg");
+    ic.setAttribute("class", "ic"); ic.setAttribute("viewBox", "0 0 24 24"); ic.setAttribute("fill", "none"); ic.setAttribute("stroke", "currentColor");
+    ic.setAttribute("stroke-width", "2"); ic.setAttribute("stroke-linecap", "round"); ic.setAttribute("stroke-linejoin", "round");
+    const r1 = document.createElementNS(SVGNS, "rect");
+    r1.setAttribute("x", "3"); r1.setAttribute("y", "5"); r1.setAttribute("width", "18"); r1.setAttribute("height", "14"); r1.setAttribute("rx", "2");
+    const r2 = document.createElementNS(SVGNS, "rect");
+    r2.setAttribute("x", "12"); r2.setAttribute("y", "11"); r2.setAttribute("width", "7"); r2.setAttribute("height", "5"); r2.setAttribute("rx", "1"); r2.setAttribute("fill", "currentColor");
+    ic.append(r1, r2);
+    const old = pipBtn.querySelector("svg"); if (old) old.replaceWith(ic); else pipBtn.prepend(ic);
+    const lbl = pipBtn.querySelector(".lbl"); if (lbl) lbl.textContent = "Float video";
+  })();
+  $("scrBtn").insertAdjacentElement("afterend", pipBtn);
+  const markPip = (on) => { pipBtn.classList.toggle("on", !!on); };
+  function pipSelfStream() {
+    if (!camTrack) return null;
+    if (!pipSelf || pipSelf.getVideoTracks()[0] !== camTrack) pipSelf = new MediaStream([camTrack]);
+    return pipSelf;
+  }
+  function syncPip() {
+    if (!pip) return;
+    const box = pip.document.getElementById("box"); if (!box) return;
+    tiles.forEach((t, id) => {
+      let e = pipEls.get(id);
+      if (!e) {
+        const d = pip.document.createElement("div"); d.className = "t" + (id === "self" ? " me" : "");
+        const v = pip.document.createElement("video"); v.autoplay = true; v.muted = true; v.playsInline = true;
+        const n = pip.document.createElement("span");
+        d.append(v, n); box.append(d); e = { d, v, n }; pipEls.set(id, e);
+      }
+      const src = id === "self" ? pipSelfStream() : t.v.srcObject;
+      if (e.v.srcObject !== src) { e.v.srcObject = src; e.v.play().catch(() => {}); }
+      if (e.n.textContent !== t.n.textContent) e.n.textContent = t.n.textContent;
+    });
+    pipEls.forEach((e, id) => { if (!tiles.has(id)) { e.d.remove(); pipEls.delete(id); } });
+    const me = pipEls.get("self"); if (me && box.lastChild !== me.d) box.append(me.d);   // you are always shown last
+  }
+  function onPipGone() {
+    if (pipTimer) { clearInterval(pipTimer); pipTimer = null; }
+    pip = null; pipAuto = false; pipEls.clear(); markPip(false);
+  }
+  function closePip() { try { pip && pip.close(); } catch (e) { /* ignore */ } onPipGone(); }
+  async function openPip(quiet) {
+    if (pipDoc) {
+      if (pip) return true;
+      try { pip = await documentPictureInPicture.requestWindow({ width: 320, height: 380 }); }
+      catch (e) { pip = null; if (!quiet) toast("Could not open the floating window.", { type: "warn" }); return false; }
+      const d = pip.document;
+      const st = d.createElement("style");
+      st.textContent = "html,body{margin:0;height:100%;background:#0b1220}#box{box-sizing:border-box;height:100%;display:flex;flex-direction:column;gap:6px;padding:6px;overflow:auto;font-family:system-ui,sans-serif}.t{position:relative;flex:1 1 0;min-height:96px;background:#000;border-radius:10px;overflow:hidden}.t.me{flex:.75 1 0}.t video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}.t span{position:absolute;left:6px;bottom:6px;max-width:90%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:rgba(0,0,0,.6);color:#fff;font-size:12px;padding:2px 8px;border-radius:6px}";
+      d.head.append(st);
+      const box = d.createElement("div"); box.id = "box"; d.body.append(box);
+      pip.addEventListener("pagehide", onPipGone);
+      markPip(true); syncPip(); pipTimer = setInterval(syncPip, 700);
+      return true;
+    }
+    // older browsers: float only the other person's video
+    const other = Array.from(tiles).find(([id]) => id !== "self"), v = other && other[1].v;
+    if (!v || !v.srcObject) { if (!quiet) toast("There is nobody to show yet.", { type: "warn" }); return false; }
+    try { await v.requestPictureInPicture(); if (!quiet) toast("This browser floats only the other person. Use Chrome or Edge to float both of you.", { ms: 6000 }); return true; }
+    catch (e) { if (!quiet) toast("Could not open the floating video.", { type: "warn" }); return false; }
+  }
+  async function autoPip() {
+    if (pip || !(pipDoc || pipOld)) return;
+    const ok = pipDoc ? await openPip(true) : false;
+    if (ok) pipAuto = true;
+    else toast("Tip: click “Float video” to keep the other person and yourself on top while you share.", { ms: 7000 });
+  }
+  pipBtn.onclick = () => {
+    if (pipDoc) { if (pip) closePip(); else openPip(false); }
+    else if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
+    else openPip(false);
+  };
 
   /* ---- background effects: blur or replace (each person's own camera, on their own device) ---- */
   const BG_KEY = "meeting-bg", BG_CUSTOM_KEY = "meeting-bg-custom";
@@ -700,6 +790,7 @@ window.addEventListener("load", () => {
     if (isHost) { finishRecording(); const n = new Date(); attendance.forEach((a) => { if (!a.left) a.left = n; }); }
     ended = true; leaving = true;
     try { if (closeTimerStop) { closeTimerStop(); closeTimerStop = null; } } catch (e) { /* ignore */ }
+    try { closePip(); } catch (e) { /* ignore */ }
     $("endedMsg").textContent = msg || "The class has ended. Thanks for joining!";
     try { wl && wl.release(); } catch (e) { /* ignore */ }
     try { peer && peer.destroy(); } catch (e) { /* ignore */ }
