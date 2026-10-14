@@ -84,6 +84,7 @@ window.addEventListener("load", () => {
 
   let teacherName = TEACHER_LABEL || "Teacher";   // what students see on the teacher's video tile
   const attendance = [];                          // { id, name, joined, left }
+  const SESSION_ID = "s" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);   // names this class session in the attendance sheet (saving it twice replaces, never duplicates)
   const rejected = new Set();                     // removed students (blocked for this session)
   const turnedAway = new Set();                   // turned away while the class was locked
   const blocked = (id) => rejected.has(id) || turnedAway.has(id);
@@ -111,7 +112,7 @@ window.addEventListener("load", () => {
   $("pjTag").textContent = CFG.TAGLINE || "";
   $("pjWelcome").textContent = CFG.WELCOME_TEXT || "";
   $("pjFoot").textContent = CFG.FOOTER_TEXT || "";
-  $("pjVer").textContent = "v8";
+  $("pjVer").textContent = "v9";
   ["brandLogo", "pjLogo", "endedLogo"].forEach((id) => setLogo($(id), LOGO));
   (() => {
     const l = document.createElement("link"); l.rel = "icon";
@@ -641,7 +642,6 @@ window.addEventListener("load", () => {
         if (closeTimerStop) { closeTimerStop(); closeTimerStop = null; }
         if (isHost) {
           bcast({ t: "end" });
-          if (attendance.length) downloadAttendance();
           setTimeout(() => showEnded("The class time is over, so the class was closed automatically. Thanks for teaching!"), 400);
         } else showEnded("The class time is over. Thanks for joining!");
       }
@@ -799,6 +799,7 @@ window.addEventListener("load", () => {
     try { if (closeTimerStop) { closeTimerStop(); closeTimerStop = null; } } catch (e) { /* ignore */ }
     try { closePip(); } catch (e) { /* ignore */ }
     $("endedMsg").textContent = msg || "The class has ended. Thanks for joining!";
+    if (isHost && attendance.length) finishAttendance();   // save the attendance to the admin's Drive (falls back to a download on this computer)
     try { wl && wl.release(); } catch (e) { /* ignore */ }
     try { peer && peer.destroy(); } catch (e) { /* ignore */ }
     try { stopFx(); } catch (e) { /* ignore */ }
@@ -809,7 +810,6 @@ window.addEventListener("load", () => {
     if (!confirm(isHost ? "End the class for everyone?" : "Leave the class?")) return;
     if (isHost) {
       bcast({ t: "end" });
-      if (attendance.length && confirm("Download the attendance list before ending?")) downloadAttendance();
       setTimeout(() => showEnded(), 400);
     } else showEnded();
   };
@@ -1839,6 +1839,36 @@ window.addEventListener("load", () => {
     attendance.forEach((a) => rows.push([a.name, fmt(a.joined), a.left ? fmt(a.left) : "(still in class)", Math.round(((a.left || now) - a.joined) / 60000)]));
     const csv = "\ufeff" + rows.map((r) => r.map(csvCell).join(",")).join("\r\n");
     saveBlob(new Blob([csv], { type: "text/csv;charset=utf-8" }), `attendance-${ROOM_ID}-${now.toISOString().slice(0, 10)}.csv`);
+  }
+  /* ---- attendance to the admin's Drive ----
+     Sends the attendance list to the Apps Script gate (Code.gs v8, action
+     saveAttendance). The teacher's signed host ticket from the join link
+     proves who is saving, so nobody else can write to the sheet. Resolves
+     true when it was saved. Resolves false (never throws) when the gate
+     is not set up, the link has no ticket, there is no internet, or the
+     gate refuses; the caller then falls back to a download. */
+  function saveAttendanceToDrive() {
+    if (!GATE_URL || !TICKET_SIG) return Promise.resolve(false);
+    const now = Date.now();
+    const rows = attendance.map((a) => ({ name: a.name, joined: a.joined.getTime(), left: (a.left || new Date(now)).getTime() }));
+    return fetch(GATE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action: "saveAttendance", room: ROOM_ID, uid: TICKET_UID, exp: TICKET_EXP, sig: TICKET_SIG, session: SESSION_ID, teacher: teacherName, rows })
+    })
+      .then((res) => res.json())
+      .then((data) => !!(data && data.ok))
+      .catch((e) => { console.warn("attendance save failed", e); return false; });
+  }
+  // Runs once, when the teacher's class ends. Shows the result on the "class ended" screen.
+  function finishAttendance() {
+    const el = $("endedMsg"), base = el.textContent;
+    el.textContent = base + " Saving the attendance to Drive…";
+    saveAttendanceToDrive().then((ok) => {
+      if (ok) { el.textContent = base + " Attendance saved to Drive."; return; }
+      try { downloadAttendance(); } catch (e) { /* ignore */ }
+      el.textContent = base + " Could not save the attendance to Drive, so it was downloaded to this computer instead.";
+    });
   }
 
   /* ---- recording (teacher) ---- */
